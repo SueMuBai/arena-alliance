@@ -89,7 +89,7 @@
           <td>${k.lastSeenTick ?? '-'}</td>
           <td style="color:var(--dim);font-size:12px">${esc(k.lastError || '')}</td>
           <td><div class="privacy-options">
-            <label><input type="checkbox" data-privacy="showCoreOnMap" ${k.showCoreOnMap ? 'checked' : ''}>联盟地图显示核心</label>
+            <label><input type="checkbox" data-privacy="showCoreOnMap" ${k.showCoreOnMap ? 'checked' : ''}>向其他成员显示核心</label>
             <label><input type="checkbox" data-privacy="rosterIdsOnly" ${k.rosterIdsOnly ? 'checked' : ''}>盟友接口仅返回对象 ID</label>
           </div></td>
           <td>${toggle}

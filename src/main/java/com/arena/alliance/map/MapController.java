@@ -1,9 +1,11 @@
 package com.arena.alliance.map;
 
+import com.arena.alliance.auth.CurrentUser;
 import com.arena.alliance.common.ApiResponse;
 import com.arena.alliance.incident.IncidentService;
 import com.arena.alliance.rules.RuleSettings;
 import com.arena.alliance.rules.RuleService;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -32,8 +34,8 @@ public class MapController {
     }
 
     @GetMapping("/snapshot")
-    public ApiResponse<Map<String, Object>> snapshot() {
-        return ApiResponse.ok(snapshotService.build());
+    public ApiResponse<Map<String, Object>> snapshot(HttpServletRequest request) {
+        return ApiResponse.ok(snapshotService.build(current(request).id()));
     }
 
     /** 当前生效的联盟规则（成员可见，公约页展示用） */
@@ -48,7 +50,11 @@ public class MapController {
     }
 
     @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter stream() {
-        return sse.subscribe();
+    public SseEmitter stream(HttpServletRequest request) {
+        return sse.subscribe(current(request).id());
+    }
+
+    private static CurrentUser current(HttpServletRequest request) {
+        return (CurrentUser) request.getAttribute(CurrentUser.ATTR);
     }
 }

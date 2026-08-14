@@ -7,7 +7,10 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.LongFunction;
 
 /**
  * 地图页实时通道（SSE）：snapshot 全量快照 / incident 事件 / ping 心跳。
@@ -17,23 +20,32 @@ public class MapSseService {
 
     private static final Logger log = LoggerFactory.getLogger(MapSseService.class);
 
-    private final CopyOnWriteArrayList<SseEmitter> emitters = new CopyOnWriteArrayList<>();
+    private record Subscriber(long userId, SseEmitter emitter) {
+    }
 
-    public SseEmitter subscribe() {
+    private final CopyOnWriteArrayList<Subscriber> subscribers = new CopyOnWriteArrayList<>();
+
+    public SseEmitter subscribe(long userId) {
         SseEmitter emitter = new SseEmitter(0L);
-        emitters.add(emitter);
-        emitter.onCompletion(() -> emitters.remove(emitter));
-        emitter.onTimeout(() -> emitters.remove(emitter));
-        emitter.onError(e -> emitters.remove(emitter));
+        Subscriber subscriber = new Subscriber(userId, emitter);
+        subscribers.add(subscriber);
+        emitter.onCompletion(() -> subscribers.remove(subscriber));
+        emitter.onTimeout(() -> subscribers.remove(subscriber));
+        emitter.onError(e -> subscribers.remove(subscriber));
         return emitter;
     }
 
     public int clientCount() {
-        return emitters.size();
+        return subscribers.size();
     }
 
-    public void broadcastSnapshot(Object payload) {
-        broadcast("snapshot", payload);
+    /** 每个用户只生成一次个性化快照，同一账号的多个标签页复用 payload。 */
+    public void broadcastSnapshots(LongFunction<Object> payloadFactory) {
+        Map<Long, Object> payloads = new HashMap<>();
+        for (Subscriber subscriber : subscribers) {
+            Object payload = payloads.computeIfAbsent(subscriber.userId(), payloadFactory::apply);
+            send(subscriber, "snapshot", payload);
+        }
     }
 
     public void broadcastIncident(Object payload) {
@@ -46,14 +58,18 @@ public class MapSseService {
     }
 
     private void broadcast(String event, Object payload) {
-        for (SseEmitter emitter : emitters) {
-            try {
-                emitter.send(SseEmitter.event().name(event).data(payload, MediaType.APPLICATION_JSON));
-            } catch (Exception e) {
-                // 客户端已断开（刷新/关页）：直接移除即可。
-                // 不要再调 complete()——响应已不可用，会触发 AsyncRequestNotUsableException。
-                emitters.remove(emitter);
-            }
+        for (Subscriber subscriber : subscribers) {
+            send(subscriber, event, payload);
+        }
+    }
+
+    private void send(Subscriber subscriber, String event, Object payload) {
+        try {
+            subscriber.emitter().send(SseEmitter.event().name(event).data(payload, MediaType.APPLICATION_JSON));
+        } catch (Exception e) {
+            // 客户端已断开（刷新/关页）：直接移除即可。
+            // 不要再调 complete()——响应已不可用，会触发 AsyncRequestNotUsableException。
+            subscribers.remove(subscriber);
         }
     }
 }

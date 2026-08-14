@@ -57,6 +57,17 @@ class MapSnapshotServiceTest {
 
         assertFalse(memberView.containsKey("core"));
         assertTrue(((List<?>) snapshot.get("enemies")).isEmpty());
+
+        Map<String, Object> ownerSnapshot = service.build(7L);
+        Map<String, Object> ownerMemberView =
+                ((List<Map<String, Object>>) ownerSnapshot.get("members")).getFirst();
+        assertTrue(ownerMemberView.containsKey("core"));
+        assertTrue(((List<?>) ownerSnapshot.get("enemies")).isEmpty());
+
+        Map<String, Object> otherSnapshot = service.build(8L);
+        Map<String, Object> otherMemberView =
+                ((List<Map<String, Object>>) otherSnapshot.get("members")).getFirst();
+        assertFalse(otherMemberView.containsKey("core"));
     }
 
     private static GameObject core(String id, boolean controlled, String owner, long x, long y) {

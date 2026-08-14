@@ -48,7 +48,7 @@ public class ApiKey {
     @Column(name = "last_seen_tick")
     private Long lastSeenTick;
 
-    /** 是否在联盟地图成员图层显示自己的 Core；null 兼容升级前的旧数据。 */
+    /** 是否向其他成员的联盟地图显示自己的 Core；所有者自己始终可见；null 兼容旧数据。 */
     @Column(name = "show_core_on_map")
     private Boolean showCoreOnMap = Boolean.TRUE;
 

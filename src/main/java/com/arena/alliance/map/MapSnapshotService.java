@@ -56,7 +56,7 @@ public class MapSnapshotService {
             return;
         }
         lastPushedVersion = version;
-        sse.broadcastSnapshot(build());
+        sse.broadcastSnapshots(userId -> build(userId));
     }
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
@@ -65,7 +65,17 @@ public class MapSnapshotService {
         lastPushedVersion = -1;
     }
 
+    /** 无查看者上下文时按最严格隐私生成，主要用于内部检查和测试。 */
     public Map<String, Object> build() {
+        return build(null);
+    }
+
+    /** 为指定平台账号生成快照：隐藏 Core 对所有其他账号生效，但所有者自己始终可见。 */
+    public Map<String, Object> build(long viewerUserId) {
+        return build(Long.valueOf(viewerUserId));
+    }
+
+    private Map<String, Object> build(Long viewerUserId) {
         Map<String, Object> snapshot = new LinkedHashMap<>();
         snapshot.put("tick", aggregator.maxTick());
         snapshot.put("allianceName", ruleService.rules().allianceName);
@@ -79,8 +89,8 @@ public class MapSnapshotService {
         Map<Long, WorldAggregator.MemberSnapshot> memberSnapshots = aggregator.members();
         Map<Long, ApiKeyService.PrivacySettings> privacyByKey =
                 apiKeyService.privacySettings(memberSnapshots.keySet());
-        Set<String> hiddenCoreIds = new HashSet<>();
-        Set<String> hiddenCoreOwners = new HashSet<>();
+        Set<String> allianceCoreIds = new HashSet<>();
+        Set<String> allianceCoreOwners = new HashSet<>();
 
         List<Map<String, Object>> members = new ArrayList<>();
         for (WorldAggregator.MemberSnapshot m : memberSnapshots.values()) {
@@ -101,7 +111,14 @@ public class MapSnapshotService {
             mm.put("population", state.population());
             mm.put("resources", state.resources());
             GameObject core = state.controlledCore();
-            if (core != null && privacy.showCoreOnMap()) {
+            if (core != null && core.id() != null) {
+                allianceCoreIds.add(core.id());
+            }
+            if (core != null && m.gameUsername() != null) {
+                allianceCoreOwners.add(m.gameUsername());
+            }
+            boolean ownerViewing = viewerUserId != null && viewerUserId == m.userId();
+            if (core != null && (privacy.showCoreOnMap() || ownerViewing)) {
                 Map<String, Object> cm = new LinkedHashMap<>();
                 cm.put("id", core.id());
                 cm.put("pos", cells(core.position()));
@@ -109,13 +126,6 @@ public class MapSnapshotService {
                 cm.put("shield", core.shield());
                 cm.put("state", core.state());
                 mm.put("core", cm);
-            } else if (core != null) {
-                if (core.id() != null) {
-                    hiddenCoreIds.add(core.id());
-                }
-                if (m.gameUsername() != null) {
-                    hiddenCoreOwners.add(m.gameUsername());
-                }
             }
             List<Map<String, Object>> units = new ArrayList<>();
             if (state.objects() != null) {
@@ -140,8 +150,8 @@ public class MapSnapshotService {
 
         List<Map<String, Object>> enemies = new ArrayList<>();
         for (WorldAggregator.EnemySighting e : aggregator.enemies().values()) {
-            if (hiddenCoreIds.contains(e.id())
-                    || ("CORE".equals(e.kind()) && hiddenCoreOwners.contains(e.ownerUsername()))) {
+            if (allianceCoreIds.contains(e.id())
+                    || ("CORE".equals(e.kind()) && allianceCoreOwners.contains(e.ownerUsername()))) {
                 continue;
             }
             Map<String, Object> em = new LinkedHashMap<>();
