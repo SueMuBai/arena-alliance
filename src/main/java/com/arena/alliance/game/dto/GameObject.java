@@ -31,4 +31,13 @@ public record GameObject(
     public boolean isControlled() {
         return Boolean.TRUE.equals(controlled);
     }
+
+    /**
+     * 曼哈顿视野半径；未知类型按 0 处理（协议新增兵种时保持容错）。
+     * 协议中 unit_type 只在 UNIT 上出现，Core 的 unitType 为 null，需用 kind 查表。
+     */
+    public int visionRadius() {
+        UnitType type = UnitType.fromName(isUnit() ? unitType : kind);
+        return type == null ? 0 : type.visionRadius();
+    }
 }

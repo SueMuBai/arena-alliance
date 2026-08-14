@@ -29,19 +29,66 @@
     <div class="map-hud">
       <button class="btn sm" id="btn-center">回到原点</button>
       <button class="btn sm" id="btn-beacon">⭐ 信标</button>
+      <span class="badge" id="hud-selected" style="display:none;cursor:pointer" title="点击取消选中"></span>
       <span id="hud-pos"></span>
-      <span>拖拽平移 · 滚轮缩放 · 点击成员定位</span>
+      <span>拖拽平移 · 滚轮缩放 · 点击成员/单位选中</span>
     </div>
+    <div class="map-tooltip" id="map-tooltip"></div>
   </div>
-  <div class="sidebar">
+  <div class="sidebar" id="side-app" v-cloak>
     <div class="tabs">
-      <button id="tab-members" class="active">成员</button>
-      <button id="tab-feed">事件流</button>
+      <button :class="{active: tab==='members'}" @click="tab='members'">成员</button>
+      <button :class="{active: tab==='feed'}" @click="tab='feed'">事件流</button>
     </div>
-    <div class="tab-body" id="panel-members"></div>
-    <div class="tab-body" id="panel-feed" style="display:none"></div>
+    <div class="tab-body" v-show="tab==='members'">
+      <div v-if="members.length === 0"
+           style="color:var(--dim);padding:30px 10px;text-align:center;line-height:1.8">
+        暂无成员数据<br>到「我的 Key」上传游戏 apikey 加入联盟
+      </div>
+      <div v-for="m in members" :key="m.keyId"
+           class="member"
+           :class="{offline: !m.online, selected: m.keyId === selectedKeyId}"
+           :style="m.keyId === selectedKeyId ? {borderColor: color(m)} : {}"
+           :title="m.keyId === selectedKeyId ? '再次点击取消选中' : '点击选中并定位（地图上其余成员将淡出）'"
+           @click="toggleSelect(m)">
+        <div class="row1">
+          <span class="cdot" :style="{background: color(m), color: color(m)}"></span>
+          <span class="gname">@{{ m.gameUsername || ('key-' + m.keyId) }}</span>
+          <span class="dot" :class="m.online ? 'on' : 'off'" :title="m.online ? '在线' : '离线'"></span>
+          <span style="flex:1"></span>
+          <span v-if="m.warnings > 0" class="tag warn">警告×{{ m.warnings }}</span>
+          <span v-if="m.userStatus === 'KICKED'" class="tag danger">已踢出</span>
+          <span class="lname">{{ m.memberName || '' }}</span>
+        </div>
+        <div class="row2">
+          <span>人口 <b>{{ m.population ?? '-' }}</b></span>
+          <span>兵力 <b>{{ troops(m) }}</b></span>
+          <span>资源 <b>{{ m.resources ?? '-' }}</b></span>
+        </div>
+        <div class="row2">
+          <span>Core <b>{{ coreText(m) }}</b></span>
+          <span style="flex:1"></span>
+          <span v-if="m.core && m.core.pos">[{{ m.core.pos[0] }},{{ m.core.pos[1] }}]</span>
+        </div>
+        <div class="hpbar"><i :style="{width: hpPercent(m) + '%'}"></i></div>
+      </div>
+    </div>
+    <div class="tab-body" v-show="tab==='feed'">
+      <div v-if="incidents.length === 0"
+           style="color:var(--dim);padding:30px 10px;text-align:center">暂无事件</div>
+      <transition-group name="feed">
+        <div v-for="i in feedItems" :key="i.id ?? i.createdAt"
+             class="incident" :class="feedClass(i)">
+          <div><b>{{ feedLabel(i) }}</b> {{ feedWho(i) }}</div>
+          <div v-if="i.detail">{{ i.detail }}</div>
+          <div class="meta">Tick {{ i.tick ?? '-' }} · {{ time(i.createdAt) }}</div>
+        </div>
+      </transition-group>
+    </div>
   </div>
 </div>
+<style>[v-cloak] { display: none; }</style>
+<script src="/js/vendor/vue.global.prod.js"></script>
 <script src="/js/api.js"></script>
 <script src="/js/nav.js"></script>
 <script src="/js/map.js"></script>

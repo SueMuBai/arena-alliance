@@ -27,15 +27,16 @@
 
   const canvas = $id('map');
   const ctx = canvas.getContext('2d');
-  const state = {
+  // Vue 响应式状态：Canvas 每帧直接读取，侧栏组件自动跟随变化
+  const state = Vue.reactive({
     me: null,
     snapshot: null,
     incidents: [],
     alerts: [],                       // {x, y, until, color}
     cam: { cx: 0, cy: 0, scale: 22 },
     sseOk: false,
-    activeTab: 'members'
-  };
+    selectedKeyId: null               // 选中的成员（keyId），其余成员淡出
+  });
   const colorCache = {};
 
   /* 每个成员（游戏账号/keyId）一种颜色；按 keyId 取模保证跨刷新稳定 */
@@ -149,13 +150,14 @@
       }
     }
 
-    // 敌方目击（红色发光，按目击时效淡出；深浅同样区分角色）
+    // 敌方目击（红色发光，按目击时效淡出；深浅同样区分角色；有成员选中时整体降权）
+    const selId = state.selectedKeyId;
     for (const e of snap.enemies || []) {
       if (!e.pos || !inView(e.pos[0], e.pos[1])) continue;
       const age = Math.max(0, (snap.tick || 0) - (e.tick || 0));
-      const alpha = Math.max(0.25, 1 - age * 0.12);
+      const alpha = Math.max(0.25, 1 - age * 0.12) * (selId != null ? 0.35 : 1);
       drawEntity(e.pos[0], e.pos[1], e.kind, e.type, roleColor('#ff5062', e.type), alpha, true);
-      if (s >= 14 && e.kind === 'CORE' && e.owner) {
+      if (s >= 14 && e.kind === 'CORE' && e.owner && selId == null) {
         ctx.fillStyle = 'rgba(255,80,98,' + alpha + ')';
         ctx.font = '11px sans-serif';
         ctx.textAlign = 'center';
@@ -163,16 +165,20 @@
       }
     }
 
-    // 联盟成员
+    // 联盟成员：选中者全亮 + 光环 + 选中环，其余淡出
     (snap.members || []).forEach((m) => {
       const color = memberColor(m.keyId);
+      const isSel = selId != null && m.keyId === selId;
+      const baseAlpha = selId == null ? (m.online ? 1 : 0.45)
+        : (isSel ? 1 : 0.15);
       for (const u of m.units || []) {
         if (u.pos && inView(u.pos[0], u.pos[1])) {
-          drawEntity(u.pos[0], u.pos[1], 'UNIT', u.type, roleColor(color, u.type), m.online ? 1 : 0.45, false, u.cargo);
+          if (isSel) drawHalo(u.pos[0], u.pos[1], color);
+          drawEntity(u.pos[0], u.pos[1], 'UNIT', u.type, roleColor(color, u.type), baseAlpha, false, u.cargo);
         }
       }
       if (m.core && m.core.pos && inView(m.core.pos[0], m.core.pos[1])) {
-        drawCore(m, color);
+        drawCore(m, color, baseAlpha, isSel, now);
       }
     });
 
@@ -280,12 +286,12 @@
     ctx.globalAlpha = 1;
   }
 
-  function drawCore(m, color) {
+  function drawCore(m, color, alpha, selected, now) {
     const s = state.cam.scale;
     const pos = m.core.pos;
     const cx = w2sX(pos[0]) + s / 2, cy = w2sY(pos[1]) + s / 2;
     const r = Math.max(4, s * 0.42);
-    ctx.globalAlpha = m.online ? 1 : 0.45;
+    ctx.globalAlpha = alpha;
     // 本体
     ctx.fillStyle = color;
     roundRect(cx - r, cy - r, r * 2, r * 2, Math.max(2, s * 0.12));
@@ -328,13 +334,37 @@
       ctx.textAlign = 'center';
       ctx.fillText('⇢', cx, cy - r - 4);
     }
-    // 名字
-    if (state.cam.scale >= 12) {
+    // 名字：选中时无视缩放常显；淡出状态不画避免文字堆叠
+    if (selected || (alpha >= 0.4 && state.cam.scale >= 12)) {
       ctx.font = 'bold 12px sans-serif';
       ctx.textAlign = 'center';
       ctx.fillStyle = color;
       ctx.fillText('@' + (m.gameUsername || ('key-' + m.keyId)), cx, cy - r - (m.core.state === 'MOVING' ? 18 : 6));
     }
+    // 选中环（旋转虚线）
+    if (selected) {
+      ctx.globalAlpha = 0.95;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 5]);
+      ctx.lineDashOffset = -((now || 0) / 40) % 11;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r + Math.max(6, s * 0.34), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /** 选中成员单位脚下的高亮光环 */
+  function drawHalo(wx, wy, color) {
+    const s = state.cam.scale;
+    const cx = w2sX(wx) + s / 2, cy = w2sY(wy) + s / 2;
+    ctx.globalAlpha = 0.16;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(cx, cy, Math.max(5, s * 0.55), 0, Math.PI * 2);
+    ctx.fill();
     ctx.globalAlpha = 1;
   }
 
@@ -360,6 +390,78 @@
     ctx.closePath();
   }
 
+  // ---------- 成员选中 ----------
+  function findMember(keyId) {
+    return ((state.snapshot && state.snapshot.members) || []).find(m => m.keyId === keyId);
+  }
+
+  function selectMember(keyId, center) {
+    state.selectedKeyId = keyId;
+    updateSelectedHud();
+    if (keyId != null && center) {
+      const m = findMember(keyId);
+      if (m && m.core && m.core.pos) {
+        centerOn(m.core.pos[0], m.core.pos[1], Math.max(state.cam.scale, 16));
+      }
+    }
+  }
+
+  function updateSelectedHud() {
+    const el = $id('hud-selected');
+    if (!el) return;
+    const m = state.selectedKeyId != null ? findMember(state.selectedKeyId) : null;
+    if (!m) {
+      el.style.display = 'none';
+      return;
+    }
+    el.style.display = '';
+    el.innerHTML = '已选中 <b style="color:' + memberColor(m.keyId) + '">@'
+      + esc(m.gameUsername || ('key-' + m.keyId)) + '</b> ✕';
+  }
+
+  /** 命中检测：优先成员 Core，再成员单位，最后敌人（供点选与悬停提示用） */
+  function hitTest(mx, my) {
+    const snap = state.snapshot;
+    if (!snap) return null;
+    const s = state.cam.scale;
+    const hitR2 = Math.pow(Math.max(7, s * 0.55), 2);
+    const near = (pos) => {
+      const dx = mx - (w2sX(pos[0]) + s / 2), dy = my - (w2sY(pos[1]) + s / 2);
+      return dx * dx + dy * dy <= hitR2;
+    };
+    for (const m of snap.members || []) {
+      if (m.core && m.core.pos && near(m.core.pos)) return { kind: 'member-core', member: m };
+    }
+    for (const m of snap.members || []) {
+      for (const u of m.units || []) {
+        if (u.pos && near(u.pos)) return { kind: 'member-unit', member: m, unit: u };
+      }
+    }
+    for (const e of snap.enemies || []) {
+      if (e.pos && near(e.pos)) return { kind: 'enemy', enemy: e };
+    }
+    return null;
+  }
+
+  function tooltipHtml(hit) {
+    if (hit.kind === 'member-core') {
+      const m = hit.member, c = m.core;
+      return '<b style="color:' + memberColor(m.keyId) + '">@' + esc(m.gameUsername || ('key-' + m.keyId)) + '</b>'
+        + '<div class="sub">Core ' + (c.hp ?? '-') + 'HP / ' + (c.shield || 0) + '盾 · ['
+        + c.pos[0] + ',' + c.pos[1] + ']' + (m.online ? '' : ' · 离线') + '</div>';
+    }
+    if (hit.kind === 'member-unit') {
+      const m = hit.member, u = hit.unit;
+      return '<b style="color:' + memberColor(m.keyId) + '">@' + esc(m.gameUsername || ('key-' + m.keyId)) + '</b>'
+        + '<div class="sub">' + esc(u.type || '单位') + ' ' + (u.hp ?? '-') + 'HP · ['
+        + u.pos[0] + ',' + u.pos[1] + ']' + (u.cargo > 0 ? ' · 载货' : '') + '</div>';
+    }
+    const e = hit.enemy;
+    const what = e.kind === 'CORE' ? ('Core' + (e.owner ? ' @' + esc(e.owner) : '')) : esc(e.type || '单位');
+    return '<b style="color:#ff5062">敌方 ' + what + '</b>'
+      + '<div class="sub">' + (e.hp != null ? e.hp + 'HP · ' : '') + '[' + e.pos[0] + ',' + e.pos[1] + ']</div>';
+  }
+
   // ---------- 交互 ----------
   let dragging = false, lastX = 0, lastY = 0, moved = 0;
   canvas.addEventListener('mousedown', e => {
@@ -369,9 +471,26 @@
   });
   window.addEventListener('mousemove', e => {
     const rect = canvas.getBoundingClientRect();
-    const wx = Math.floor(s2wX(e.clientX - rect.left));
-    const wy = Math.floor(s2wY(e.clientY - rect.top));
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const wx = Math.floor(s2wX(mx));
+    const wy = Math.floor(s2wY(my));
     $id('hud-pos').textContent = '[' + wx + ', ' + wy + ']';
+
+    // 悬停提示（仅在画布上且未拖拽时）
+    const tip = $id('map-tooltip');
+    const hit = (!dragging && e.target === canvas) ? hitTest(mx, my) : null;
+    if (tip) {
+      if (hit) {
+        tip.innerHTML = tooltipHtml(hit);
+        tip.style.left = (mx + 14) + 'px';
+        tip.style.top = (my + 14) + 'px';
+        tip.style.display = 'block';
+      } else {
+        tip.style.display = 'none';
+      }
+    }
+    canvas.style.cursor = hit && hit.kind !== 'enemy' ? 'pointer' : '';
+
     if (!dragging) return;
     const dx = e.clientX - lastX, dy = e.clientY - lastY;
     moved += Math.abs(dx) + Math.abs(dy);
@@ -383,6 +502,18 @@
     dragging = false;
     canvas.classList.remove('dragging');
   });
+  // 点选：点中成员 Core/单位选中该成员（再点取消），点空白处取消选中
+  canvas.addEventListener('click', e => {
+    if (moved >= 5) return;
+    const rect = canvas.getBoundingClientRect();
+    const hit = hitTest(e.clientX - rect.left, e.clientY - rect.top);
+    if (hit && (hit.kind === 'member-core' || hit.kind === 'member-unit')) {
+      selectMember(hit.member.keyId === state.selectedKeyId ? null : hit.member.keyId, false);
+    } else {
+      selectMember(null, false);
+    }
+  });
+
   canvas.addEventListener('wheel', e => {
     e.preventDefault();
     const rect = canvas.getBoundingClientRect();
@@ -409,135 +540,46 @@
     lg.classList.toggle('collapsed');
     $id('legend-arrow').textContent = lg.classList.contains('collapsed') ? '▸' : '▾';
   };
+  $id('hud-selected').onclick = () => selectMember(null, false);
 
-  // ---------- 侧栏 ----------
-  const TABS = ['members', 'feed'];
-  TABS.forEach(t => $id('tab-' + t).onclick = () => switchTab(t));
-  function switchTab(tab) {
-    state.activeTab = tab;
-    for (const t of TABS) {
-      $id('tab-' + t).classList.toggle('active', t === tab);
-      $id('panel-' + t).style.display = t === tab ? '' : 'none';
-    }
-  }
-
-  // 公约内容已迁移至独立页面 rules.html（联盟规则）；此构建函数暂留备用
-  function covenantHtml(r) {
-    const punish = b => b ? '<span class="kick-tag">立即踢出</span>'
-      : (r.warnOnShieldDamage ? '<span class="warn-tag">记警告</span>' : '仅记录');
-    return `
-      <h4>一、成员身份判定</h4>
-      <p>登录本平台（LinuxDo 或账号密码）并在「我的 Key」上传游戏 apikey 后，平台接入游戏识别该 key 的游戏用户名——<span class="hl">该游戏账号即成为受保护的联盟成员</span>。
-      地图上带成员色标识的都是联盟单位，<span class="hl" style="color:var(--danger)">红色发光的均为非联盟单位（敌对）</span>。
-      被踢出者全部 key 停用、移出地图、不再受任何保护。</p>
-
-      <h4>二、互不侵犯</h4>
-      <p>禁止对任何联盟成员的单位或 Core 发起攻击（SWEEP 扫击指向成员所在格、SHOOT 射击成员所在格/锁定成员对象，均判定为攻击行为）。同一玩家的多个游戏账号之间不受此限。</p>
-
-      <h4>三、攻击抑制机制${r.interventionEnabled ? '' : '（当前已停用）'}</h4>
-      <div class="cov-box">
-      <p>平台实时监审每位成员提交的作战计划：</p>
-      <ul>
-        <li>发现攻击成员的动作 → <span class="hl">立即用攻击者本人的 key 提交净化计划覆盖</span>（仅攻击动作改为 WAIT，采集/移动等原样保留）；</li>
-        <li>攻击方 agent 反复重提 → 平台持续覆盖，同一 Tick 内最多 <span class="hl">${r.maxOverridesPerTick} 次</span>；</li>
-        <li>网页手操（MANUAL）优先级高于 AGENT，<span class="hl">无法覆盖</span>——将记录告警并进入伤亡裁决。</li>
-      </ul>
-      </div>
-
-      <h4>四、伤亡裁决与处罚</h4>
-      <p>每个 Tick 结算后，平台通过攻守双方战斗事件交叉归因（Core 摧毁者名单 / 命中目标 / 扫击格位）。对内攻击造成以下后果时：</p>
-      <ul>
-        <li>致成员单位死亡 → ${punish(r.kickOnUnitDeath)}</li>
-        <li>致成员 Core 掉血 → ${punish(r.kickOnCoreDamage)}</li>
-        <li>致成员 Core 被摧毁 → ${punish(r.kickOnCoreDestroyed)}</li>
-        <li>仅打掉护盾 / 单位受伤未死 → ${r.warnOnShieldDamage
-        ? '<span class="warn-tag">记警告</span>，累计 <span class="hl">' + r.kickAfterWarnings + '</span> 次自动踢出' : '仅记录'}</li>
-      </ul>
-      <p>全部拦截、警告、踢出记录在「事件流」对全员公开，可作申诉依据；管理员可复核并恢复成员资格。</p>
-
-      <h4>五、外部威胁</h4>
-      <p>${r.externalAlert
-        ? '非联盟玩家攻击成员时，地图打红色脉冲标记并在事件流通报。'
-        : '外部攻击告警当前已关闭。'}平台没有外部玩家的 key，<span class="hl">无法代为拦截外部攻击</span>，请各自维持防线并按告警互相支援。</p>
-
-      <h4>六、其他约定</h4>
-      <ul>
-        <li>key 失效（改密/撤销）会失去保护并触发告警，请及时更换；</li>
-        <li>同一游戏账号上传多个 key 时只保留一条连接；</li>
-        <li>新成员注册${r.registrationOpen ? '开放中' : '已关闭'}${r.minTrustLevel > 0 ? '（LinuxDo 信任等级 ≥ ' + r.minTrustLevel + '）' : ''}。</li>
-      </ul>`;
-  }
-
-  function renderMembers() {
-    const snap = state.snapshot;
-    const panel = $id('panel-members');
-    if (!snap || !snap.members || snap.members.length === 0) {
-      panel.innerHTML = '<div style="color:var(--dim);padding:30px 10px;text-align:center;line-height:1.8">' +
-        '暂无成员数据<br>到「我的 Key」上传游戏 apikey 加入联盟</div>';
-      return;
-    }
-    const members = [...snap.members].sort((a, b) => (a.gameUsername || '').localeCompare(b.gameUsername || ''));
-    panel.innerHTML = members.map((m) => {
-      const color = memberColor(m.keyId);
-      const core = m.core;
-      const hp = core ? core.hp : 0;
-      const warn = m.warnings > 0 ? `<span class="tag warn">警告×${m.warnings}</span>` : '';
-      const kicked = m.userStatus === 'KICKED' ? '<span class="tag danger">已踢出</span>' : '';
-      return `
-      <div class="member ${m.online ? '' : 'offline'}" data-key="${m.keyId}">
-        <div class="row1">
-          <span class="cdot" style="background:${color}"></span>
-          <span class="gname">@${esc(m.gameUsername || ('key-' + m.keyId))}</span>
-          <span class="dot ${m.online ? 'on' : 'off'}" title="${m.online ? '在线' : '离线'}"></span>
-          <span style="flex:1"></span>
-          ${warn}${kicked}
-          <span class="lname">${esc(m.memberName || '')}</span>
-        </div>
-        <div class="row2">
-          <span>人口 <b>${m.population ?? '-'}</b></span>
-          <span>兵力 <b>${troopSummary(m.units)}</b></span>
-          <span>资源 <b>${m.resources ?? '-'}</b></span>
-        </div>
-        <div class="row2">
-          <span>Core <b>${core ? hp + 'HP/' + (core.shield || 0) + '盾' : (m.status === 'RESPAWNING' ? '重生中' : '-')}</b></span>
-          <span style="flex:1"></span>
-          <span>${core && core.pos ? '[' + core.pos[0] + ',' + core.pos[1] + ']' : ''}</span>
-        </div>
-        <div class="hpbar"><i style="width:${core ? Math.min(100, hp * 20) : 0}%"></i></div>
-      </div>`;
-    }).join('');
-    panel.querySelectorAll('.member').forEach(el => {
-      el.onclick = () => {
-        const m = snap.members.find(x => String(x.keyId) === el.dataset.key);
-        if (m && m.core && m.core.pos) centerOn(m.core.pos[0], m.core.pos[1], Math.max(state.cam.scale, 16));
+  // ---------- 侧栏（Vue 组件，直接绑定响应式 state） ----------
+  Vue.createApp({
+    setup() {
+      const tab = Vue.ref('members');
+      const members = Vue.computed(() => {
+        const list = (state.snapshot && state.snapshot.members) || [];
+        return [...list].sort((a, b) => (a.gameUsername || '').localeCompare(b.gameUsername || ''));
+      });
+      return {
+        tab,
+        members,
+        incidents: Vue.computed(() => state.incidents),
+        feedItems: Vue.computed(() => state.incidents.slice(0, 120)),
+        selectedKeyId: Vue.computed(() => state.selectedKeyId),
+        color: m => memberColor(m.keyId),
+        troops: m => troopSummary(m.units),
+        coreText(m) {
+          if (m.core) return (m.core.hp ?? '-') + 'HP/' + (m.core.shield || 0) + '盾';
+          return m.status === 'RESPAWNING' ? '重生中' : '-';
+        },
+        hpPercent: m => m.core ? Math.min(100, (m.core.hp || 0) * 20) : 0,
+        toggleSelect: m => selectMember(m.keyId === state.selectedKeyId ? null : m.keyId, true),
+        feedLabel: i => TYPE_LABEL[i.type] || i.type,
+        feedClass: i => TYPE_CLASS[i.type] || '',
+        feedWho(i) {
+          const who = [];
+          if (i.attackerName) who.push('攻击者 @' + i.attackerName);
+          if (i.victimName) who.push('目标 @' + i.victimName);
+          return who.join(' → ');
+        },
+        time: fmtTime
       };
-    });
-  }
-
-  function renderFeed() {
-    const panel = $id('panel-feed');
-    if (state.incidents.length === 0) {
-      panel.innerHTML = '<div style="color:var(--dim);padding:30px 10px;text-align:center">暂无事件</div>';
-      return;
     }
-    panel.innerHTML = state.incidents.slice(0, 120).map(i => {
-      const label = TYPE_LABEL[i.type] || i.type;
-      const cls = TYPE_CLASS[i.type] || '';
-      const who = [];
-      if (i.attackerName) who.push('攻击者 @' + esc(i.attackerName));
-      if (i.victimName) who.push('目标 @' + esc(i.victimName));
-      return `<div class="incident ${cls}">
-        <div><b>${label}</b> ${who.join(' → ')}</div>
-        ${i.detail ? '<div>' + esc(i.detail) + '</div>' : ''}
-        <div class="meta">Tick ${i.tick ?? '-'} · ${fmtTime(i.createdAt)}</div>
-      </div>`;
-    }).join('');
-  }
+  }).mount('#side-app');
 
   function pushIncident(incident) {
     state.incidents.unshift(incident);
     if (state.incidents.length > 300) state.incidents.length = 300;
-    renderFeed();
     // 在受害者 Core 位置打告警脉冲
     const dangerTypes = ['INTERNAL_CASUALTY', 'EXTERNAL_ATTACK', 'INTERNAL_ATTACK_MANUAL', 'KICK'];
     const warnTypes = ['INTERNAL_ATTACK_BLOCKED', 'WARNING', 'INTERNAL_ATTACK_DETECTED'];
@@ -562,8 +604,12 @@
       try {
         state.snapshot = JSON.parse(e.data);
         setAllianceName(state.snapshot.allianceName);
+        // 选中的成员已不在快照中（被踢/停用）→ 自动取消选中
+        if (state.selectedKeyId != null && !findMember(state.selectedKeyId)) {
+          state.selectedKeyId = null;
+        }
+        updateSelectedHud();
         updateHud();
-        renderMembers();
       } catch (err) { }
     });
     es.addEventListener('incident', e => {
@@ -614,14 +660,12 @@
       else if (state.snapshot.beacon && state.snapshot.beacon.pos) {
         centerOn(state.snapshot.beacon.pos[0], state.snapshot.beacon.pos[1]);
       }
-      renderMembers();
       updateHud();
     } catch (e) {
       toast(e.message, true);
     }
     try {
       state.incidents = await api('/api/map/incidents?limit=50');
-      renderFeed();
     } catch (e) { }
     connectSse();
     requestAnimationFrame(render);

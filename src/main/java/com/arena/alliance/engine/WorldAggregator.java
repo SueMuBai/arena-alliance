@@ -8,9 +8,11 @@ import org.springframework.stereotype.Component;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicLong;
@@ -19,7 +21,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * 全联盟世界聚合器：
  * - 各成员自己的对象永远全量可见 → 合并即全联盟地图
  * - 障碍是永久地形 → 累积记忆（可持久化）
- * - 敌方目击、资源点带最后可见 tick，按时效淘汰
+ * - 敌方对象只保留当前至少一个成员可见的并集，不保留最后目击幻影
+ * - 资源保留最后已知状态；格子重新进入视野且 state 不再包含时删除
  * - objectOwners 留存 40 tick，用于战后事件归因（死亡单位已从 state 消失）
  */
 @Component
@@ -48,6 +51,10 @@ public class WorldAggregator {
     private final Map<Cell, Boolean> obstacles = new ConcurrentHashMap<>();
     private final Queue<Cell> pendingObstacles = new ConcurrentLinkedQueue<>();
     private final Map<Cell, Long> resources = new ConcurrentHashMap<>();
+    /**
+     * 当前联盟视野中的敌人并集。成员 state 是完整快照；每次状态更新后从 members 现有快照重建，
+     * 因此敌人一旦不再被任何成员看见就立即消失，不保留最后目击幻影。
+     */
     private final Map<String, EnemySighting> enemies = new ConcurrentHashMap<>();
     private volatile PlayerState.Beacon beacon;
     private final AtomicLong maxTick = new AtomicLong();
@@ -56,10 +63,12 @@ public class WorldAggregator {
     private volatile MemberIndex cachedIndex = MemberIndex.EMPTY;
     private volatile long cachedIndexVersion = -1;
 
-    public void updateMember(long keyId, long userId, String gameUsername, long tick, PlayerState state) {
+    public synchronized void updateMember(long keyId, long userId, String gameUsername, long tick, PlayerState state) {
         members.put(keyId, new MemberSnapshot(keyId, userId, gameUsername, tick, state, Instant.now()));
         long max = maxTick.updateAndGet(t -> Math.max(t, tick));
 
+        Set<Cell> visibleResources = new HashSet<>();
+        Set<Cell> currentVisibleCells = visibleCells(state);
         if (state.objects() != null) {
             for (GameObject o : state.objects()) {
                 String kind = o.kind() == null ? "" : o.kind();
@@ -75,6 +84,7 @@ public class WorldAggregator {
                     }
                     case "RESOURCE" -> {
                         if (o.positions() != null) {
+                            visibleResources.addAll(o.positions());
                             for (Cell c : o.positions()) {
                                 resources.put(c, tick);
                             }
@@ -85,9 +95,6 @@ public class WorldAggregator {
                         if (o.isControlled()) {
                             objectOwners.put(o.id(), new OwnerRef(o.id(), userId, keyId, gameUsername,
                                     o.kind(), o.unitType(), tick, o.position()));
-                        } else {
-                            enemies.put(o.id(), new EnemySighting(o.id(), o.kind(), o.unitType(),
-                                    o.ownerUsername(), o.position(), o.hp(), o.shield(), tick));
                         }
                     }
                     default -> {
@@ -95,20 +102,125 @@ public class WorldAggregator {
                 }
             }
         }
+
+        // 完整 state 中，当前明确可见的格子若没有 RESOURCE，就说明该资源已被采集或消失。
+        resources.keySet().removeIf(c -> currentVisibleCells.contains(c) && !visibleResources.contains(c));
+        rebuildVisibleEnemies();
+
         if (state.beacon() != null) {
             beacon = state.beacon();
         }
-        if (tick >= max) {
-            enemies.values().removeIf(e -> e.tick() < max - 8);
-            objectOwners.values().removeIf(o -> o.lastTick() < max - 40);
-            resources.values().removeIf(t -> t < max - 400);
-        }
+        objectOwners.values().removeIf(o -> o.lastTick() < max - 40);
         version.incrementAndGet();
     }
 
-    public void removeMember(long keyId) {
+    public synchronized void removeMember(long keyId) {
         members.remove(keyId);
+        rebuildVisibleEnemies();
         version.incrementAndGet();
+    }
+
+    private void rebuildVisibleEnemies() {
+        Map<String, EnemySighting> rebuilt = new HashMap<>();
+        Set<String> allianceObjectIds = new HashSet<>();
+
+        // 同一个联盟对象在其他成员的 state 中会以 controlled=false 出现，先收集全部己方对象 ID。
+        for (MemberSnapshot member : members.values()) {
+            if (member.state() == null || member.state().objects() == null) continue;
+            for (GameObject o : member.state().objects()) {
+                if (o.isControlled() && o.id() != null) {
+                    allianceObjectIds.add(o.id());
+                }
+            }
+        }
+        for (MemberSnapshot member : members.values()) {
+            if (member.state() == null || member.state().objects() == null) continue;
+            for (GameObject o : member.state().objects()) {
+                if ((o.isCore() || o.isUnit()) && !o.isControlled()
+                        && o.id() != null && !allianceObjectIds.contains(o.id())) {
+                    EnemySighting sighting = new EnemySighting(o.id(), o.kind(), o.unitType(),
+                            o.ownerUsername(), o.position(), o.hp(), o.shield(), member.tick());
+                    rebuilt.merge(o.id(), sighting,
+                            (oldValue, newValue) -> newValue.tick() >= oldValue.tick() ? newValue : oldValue);
+                }
+            }
+        }
+        enemies.clear();
+        enemies.putAll(rebuilt);
+    }
+
+    /**
+     * 计算该玩家当前完整 state 能明确观察到的格子。服务端已经给出了可见障碍，
+     * 按官方整数 supercover 视线规则处理遮挡；障碍格本身可见，障碍后的格子不可见。
+     */
+    private Set<Cell> visibleCells(PlayerState state) {
+        Set<Cell> visible = new HashSet<>();
+        if (state.objects() == null) return visible;
+
+        Set<Cell> visibleObstacles = new HashSet<>();
+        for (GameObject o : state.objects()) {
+            if ("OBSTACLE".equals(o.kind()) && o.positions() != null) {
+                visibleObstacles.addAll(o.positions());
+            }
+        }
+        for (GameObject o : state.objects()) {
+            if (!o.isControlled() || o.position() == null) continue;
+            int radius = o.visionRadius();
+            Cell origin = o.position();
+            for (long dx = -radius; dx <= radius; dx++) {
+                long remaining = radius - Math.abs(dx);
+                for (long dy = -remaining; dy <= remaining; dy++) {
+                    Cell target = new Cell(origin.x() + dx, origin.y() + dy);
+                    if (hasLineOfSight(origin, target, visibleObstacles)) {
+                        visible.add(target);
+                    }
+                }
+            }
+        }
+        return visible;
+    }
+
+    /** 整数 supercover：线穿过格角时两侧格都参与遮挡判断。 */
+    private static boolean hasLineOfSight(Cell from, Cell to, Set<Cell> obstacles) {
+        if (from.equals(to)) return true;
+        long dx = to.x() - from.x();
+        long dy = to.y() - from.y();
+        long nx = Math.abs(dx);
+        long ny = Math.abs(dy);
+        long signX = Long.compare(dx, 0);
+        long signY = Long.compare(dy, 0);
+        long x = from.x();
+        long y = from.y();
+        long ix = 0;
+        long iy = 0;
+
+        while (ix < nx || iy < ny) {
+            long lhs = (1 + 2 * ix) * ny;
+            long rhs = (1 + 2 * iy) * nx;
+            if (lhs == rhs) {
+                // 正好穿过格角：任意一侧有障碍都挡住后方；目标障碍本身仍可见。
+                Cell sideX = new Cell(x + signX, y);
+                Cell sideY = new Cell(x, y + signY);
+                if ((!sideX.equals(to) && obstacles.contains(sideX))
+                        || (!sideY.equals(to) && obstacles.contains(sideY))) {
+                    return false;
+                }
+                x += signX;
+                y += signY;
+                ix++;
+                iy++;
+            } else if (lhs < rhs) {
+                x += signX;
+                ix++;
+            } else {
+                y += signY;
+                iy++;
+            }
+            Cell cell = new Cell(x, y);
+            if (cell.equals(to)) return true;
+            if (obstacles.contains(cell)) return false;
+        }
+        return true;
     }
 
     /** 供威胁审查用的成员对象索引（带缓存，version 不变则复用） */

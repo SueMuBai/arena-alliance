@@ -172,13 +172,9 @@ public class MapSnapshotService {
         }
         snapshot.put("obstacles", obstacles);
 
-        long maxTick = aggregator.maxTick();
         List<long[]> resources = new ArrayList<>();
-        aggregator.resources().forEach((cell, tick) -> {
-            if (tick >= maxTick - 100) {
-                resources.add(new long[]{cell.x(), cell.y()});
-            }
-        });
+        aggregator.resources().forEach((cell, observedTick) ->
+                resources.add(new long[]{cell.x(), cell.y()}));
         snapshot.put("resources", resources);
 
         PlayerState.Beacon beacon = aggregator.beacon();

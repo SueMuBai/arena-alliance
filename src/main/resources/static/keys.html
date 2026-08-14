@@ -9,27 +9,29 @@
     .privacy-options { display: grid; gap: 7px; min-width: 180px; }
     .privacy-options label { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 12px; cursor: pointer; }
     .privacy-options input { margin: 0; }
+    [v-cloak] { display: none; }
   </style>
 </head>
 <body>
 <div class="topbar" id="topbar"></div>
-<div class="page">
+<div class="page" id="app" v-cloak>
   <div class="card">
     <h2>上传游戏 apikey <small>把你的 Arena Hero Agent API Key 交给联盟托管，即可加入联盟地图与保护体系；一个账号可上传多个 key（多个游戏账号）</small></h2>
     <label class="field">
       <span class="lab">API Key（仅加密存储，绝不回显明文）</span>
-      <input type="password" id="key-token" placeholder="粘贴 Arena Hero API Key" autocomplete="off">
+      <input type="password" v-model="form.token" placeholder="粘贴 Arena Hero API Key" autocomplete="off"
+             @keydown.enter="addKey">
     </label>
     <label class="field">
       <span class="lab">备注（可选）</span>
-      <input type="text" id="key-label" placeholder="例如：大号 / 小号2" maxlength="60">
+      <input type="text" v-model="form.label" placeholder="例如：大号 / 小号2" maxlength="60">
     </label>
-    <button class="btn primary" id="btn-add">上传并接入</button>
+    <button class="btn primary" :disabled="adding" @click="addKey">{{ adding ? '接入中…' : '上传并接入' }}</button>
   </div>
 
   <div class="card">
     <h2>我的 Key 列表</h2>
-    <table>
+    <table v-if="keys.length">
       <thead>
       <tr>
         <th>游戏账号</th>
@@ -42,13 +44,44 @@
         <th style="width:180px">操作</th>
       </tr>
       </thead>
-      <tbody id="key-rows"></tbody>
+      <tbody>
+      <tr v-for="k in keys" :key="k.id">
+        <td>
+          <span v-if="k.gameUsername">@{{ k.gameUsername }}</span>
+          <span v-else style="color:var(--dim)">识别中…</span>
+        </td>
+        <td>{{ k.label || '' }}</td>
+        <td style="font-family:var(--mono)">{{ k.masked }}</td>
+        <td>
+          <span v-if="k.status === 'ENABLED'" class="dot" :class="k.online ? 'on' : 'off'"></span>
+          <span class="status-pill" :class="statusClass(k)">{{ statusText(k) }}</span>
+        </td>
+        <td style="font-family:var(--mono)">{{ k.lastSeenTick ?? '-' }}</td>
+        <td style="color:var(--dim);font-size:12px">{{ k.lastError || '' }}</td>
+        <td>
+          <div class="privacy-options">
+            <label>
+              <input type="checkbox" :checked="k.showCoreOnMap" :disabled="k.saving"
+                     @change="setPrivacy(k, 'showCoreOnMap', $event.target.checked)">向其他成员显示核心
+            </label>
+            <label>
+              <input type="checkbox" :checked="k.rosterIdsOnly" :disabled="k.saving"
+                     @change="setPrivacy(k, 'rosterIdsOnly', $event.target.checked)">盟友接口仅返回对象 ID
+            </label>
+          </div>
+        </td>
+        <td>
+          <button v-if="k.status === 'ENABLED'" class="btn sm" @click="toggle(k, 'disable')">停用</button>
+          <button v-else class="btn sm" @click="toggle(k, 'enable')">启用</button>
+          <button class="btn sm danger" @click="del(k)">删除</button>
+        </td>
+      </tr>
+      </tbody>
     </table>
-    <div id="key-empty" style="display:none;color:var(--dim);text-align:center;padding:28px">
-      还没有上传任何 key
-    </div>
+    <div v-else style="color:var(--dim);text-align:center;padding:28px">还没有上传任何 key</div>
   </div>
 </div>
+<script src="/js/vendor/vue.global.prod.js"></script>
 <script src="/js/api.js"></script>
 <script src="/js/nav.js"></script>
 <script>
@@ -70,60 +103,68 @@
       INVALID: ['凭证失效', 'err'], DUPLICATE: ['重复账号', 'warn']
     };
 
-    async function refresh() {
-      const keys = await api('/api/keys');
-      const rows = $id('key-rows');
-      $id('key-empty').style.display = keys.length ? 'none' : 'block';
-      rows.innerHTML = keys.map(k => {
-        const st = STATUS_MAP[k.status] || [k.status, ''];
-        const online = k.status === 'ENABLED'
-          ? `<span class="dot ${k.online ? 'on' : 'off'}"></span>` : '';
-        const toggle = k.status === 'ENABLED'
-          ? `<button class="btn sm" data-act="disable" data-id="${k.id}">停用</button>`
-          : `<button class="btn sm" data-act="enable" data-id="${k.id}">启用</button>`;
-        return `<tr data-key-id="${k.id}">
-          <td>${k.gameUsername ? '@' + esc(k.gameUsername) : '<span style="color:var(--dim)">识别中…</span>'}</td>
-          <td>${esc(k.label || '')}</td>
-          <td style="font-family:monospace">${esc(k.masked)}</td>
-          <td>${online}<span class="status-pill ${st[1]}">${st[0]}</span></td>
-          <td>${k.lastSeenTick ?? '-'}</td>
-          <td style="color:var(--dim);font-size:12px">${esc(k.lastError || '')}</td>
-          <td><div class="privacy-options">
-            <label><input type="checkbox" data-privacy="showCoreOnMap" ${k.showCoreOnMap ? 'checked' : ''}>向其他成员显示核心</label>
-            <label><input type="checkbox" data-privacy="rosterIdsOnly" ${k.rosterIdsOnly ? 'checked' : ''}>盟友接口仅返回对象 ID</label>
-          </div></td>
-          <td>${toggle}
-              <button class="btn sm danger" data-act="del" data-id="${k.id}">删除</button></td>
-        </tr>`;
-      }).join('');
-      rows.querySelectorAll('button').forEach(btn => {
-        btn.onclick = async () => {
-          const id = btn.dataset.id, act = btn.dataset.act;
+    Vue.createApp({
+      setup() {
+        const keys = Vue.ref([]);
+        const form = Vue.reactive({ token: '', label: '' });
+        const adding = Vue.ref(false);
+
+        async function refresh() {
           try {
-            if (act === 'del') {
-              if (!confirm('确定删除该 key？')) return;
-              await api('/api/keys/' + id, { method: 'DELETE' });
-            } else {
-              await api('/api/keys/' + id + '/' + act, { method: 'POST' });
-            }
+            keys.value = await api('/api/keys');
+          } catch (e) { }
+        }
+
+        async function addKey() {
+          const token = form.token.trim();
+          if (!token) { toast('请粘贴 apikey', true); return; }
+          adding.value = true;
+          try {
+            await api('/api/keys', {
+              method: 'POST',
+              body: JSON.stringify({ token, label: form.label.trim() })
+            });
+            form.token = '';
+            form.label = '';
+            toast('已上传，正在接入游戏…');
+            await refresh();
+          } catch (e) {
+            toast(e.message, true);
+          } finally {
+            adding.value = false;
+          }
+        }
+
+        async function toggle(k, act) {
+          try {
+            await api('/api/keys/' + k.id + '/' + act, { method: 'POST' });
             toast('操作成功');
-            refresh();
+            await refresh();
           } catch (e) {
             toast(e.message, true);
           }
-        };
-      });
-      rows.querySelectorAll('input[data-privacy]').forEach(input => {
-        input.onchange = async () => {
-          const row = input.closest('tr');
-          const toggles = row.querySelectorAll('input[data-privacy]');
-          const payload = {};
-          toggles.forEach(toggle => {
-            payload[toggle.dataset.privacy] = toggle.checked;
-            toggle.disabled = true;
-          });
+        }
+
+        async function del(k) {
+          if (!confirm('确定删除该 key？')) return;
           try {
-            await api('/api/keys/' + row.dataset.keyId + '/privacy', {
+            await api('/api/keys/' + k.id, { method: 'DELETE' });
+            toast('已删除');
+            await refresh();
+          } catch (e) {
+            toast(e.message, true);
+          }
+        }
+
+        async function setPrivacy(k, field, value) {
+          k.saving = true;
+          const payload = {
+            showCoreOnMap: k.showCoreOnMap,
+            rosterIdsOnly: k.rosterIdsOnly,
+            [field]: value
+          };
+          try {
+            await api('/api/keys/' + k.id + '/privacy', {
               method: 'POST', body: JSON.stringify(payload)
             });
             toast('隐私设置已更新');
@@ -131,32 +172,19 @@
             toast(e.message, true);
           }
           await refresh();
-        };
-      });
-    }
+        }
 
-    $id('btn-add').onclick = async () => {
-      const token = $id('key-token').value.trim();
-      if (!token) { toast('请粘贴 apikey', true); return; }
-      $id('btn-add').disabled = true;
-      try {
-        await api('/api/keys', {
-          method: 'POST',
-          body: JSON.stringify({ token, label: $id('key-label').value.trim() })
-        });
-        $id('key-token').value = '';
-        $id('key-label').value = '';
-        toast('已上传，正在接入游戏…');
         refresh();
-      } catch (e) {
-        toast(e.message, true);
-      } finally {
-        $id('btn-add').disabled = false;
-      }
-    };
+        setInterval(refresh, 8000);
 
-    await refresh();
-    setInterval(refresh, 8000);
+        return {
+          keys, form, adding,
+          addKey, toggle, del, setPrivacy,
+          statusText: k => (STATUS_MAP[k.status] || [k.status])[0],
+          statusClass: k => (STATUS_MAP[k.status] || ['', ''])[1]
+        };
+      }
+    }).mount('#app');
   })();
 </script>
 </body>
