@@ -1,0 +1,53 @@
+server:
+  port: ${PORT:8080}
+
+spring:
+  application:
+    name: arena-alliance
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    # 本地默认 SQLite（零依赖）；docker-compose / 生产通过 DB_URL 切换 PostgreSQL
+    url: ${DB_URL:jdbc:sqlite:./data/alliance.db?journal_mode=WAL&busy_timeout=5000}
+    username: ${DB_USER:}
+    password: ${DB_PASSWORD:}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:1}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+
+alliance:
+  # 数据目录：存放自动生成的密钥文件等
+  data-dir: ${ALLIANCE_DATA_DIR:./data}
+  # 全局密钥（HMAC 会话签名 + apikey AES-GCM 加密派生）；留空则首次启动自动生成到 data-dir/secret.key
+  secret: ${ALLIANCE_SECRET:}
+  session-ttl-hours: ${SESSION_TTL_HOURS:168}
+  # 开发调试用本地登录（跳过 LinuxDo OAuth），生产必须保持 false
+  dev-login-enabled: ${DEV_LOGIN_ENABLED:false}
+  game:
+    api-base: ${ARENA_API_BASE:https://api.arenahero.io}
+    ws-path: /api/v1/game/ws
+    commands-path: /api/v1/game/commands
+    # 访问游戏 API 的代理（可选，如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080）
+    proxy: ${GAME_PROXY:}
+  linuxdo:
+    client-id: ${LINUXDO_CLIENT_ID:}
+    client-secret: ${LINUXDO_CLIENT_SECRET:}
+    authorize-url: ${LINUXDO_AUTHORIZE_URL:https://connect.linux.do/oauth2/authorize}
+    token-url: ${LINUXDO_TOKEN_URL:https://connect.linux.do/oauth2/token}
+    user-url: ${LINUXDO_USER_URL:https://connect.linux.do/api/user}
+    # 对外访问地址（用于拼 OAuth 回调），留空则按请求 Host 推断，如 https://alliance.example.com
+    redirect-base: ${PUBLIC_BASE_URL:}
+    # 访问 connect.linux.do 的代理（可选；直连超时/DNS 污染时必配，如 http://127.0.0.1:7890）
+    proxy: ${OAUTH_PROXY:}
+
+logging:
+  level:
+    com.arena.alliance: INFO

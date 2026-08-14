@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>联盟规则 · Arena 联盟</title>
+  <link rel="stylesheet" href="/css/app.css">
+  <style>
+    .rule-doc h3 { font-size: 15px; margin: 20px 0 8px; color: var(--text); }
+    .rule-doc h3:first-child { margin-top: 0; }
+    .rule-doc p, .rule-doc li { color: var(--dim); font-size: 13px; line-height: 1.85; }
+    .rule-doc ul, .rule-doc ol { padding-left: 20px; margin: 4px 0; }
+    .rule-doc .hl { color: var(--text); }
+    .rule-doc .kick-tag { color: var(--danger); font-weight: 600; }
+    .rule-doc .warn-tag { color: var(--warn); font-weight: 600; }
+    .rule-doc code, .rule-doc pre {
+      font-family: Consolas, Monaco, monospace;
+      background: #0d1117;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+    }
+    .rule-doc code { padding: 1px 6px; font-size: 12px; color: #7fb0ff; }
+    .rule-doc pre {
+      padding: 12px 14px;
+      overflow-x: auto;
+      font-size: 12px;
+      line-height: 1.6;
+      color: #c8d3e0;
+      margin: 8px 0;
+    }
+    .token-row { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+    .token-row input { flex: 1; font-family: monospace; font-size: 12px; }
+  </style>
+</head>
+<body>
+<div class="topbar" id="topbar"></div>
+<div class="page rule-doc">
+
+  <div class="card">
+    <h2>联盟公约</h2>
+    <div id="covenant" style="color:var(--dim)">加载中…</div>
+  </div>
+
+  <div class="card">
+    <h2>盟友判定接口 <small>给你自己的 agent 用：出手前先确认目标不是盟友，避免触发拦截与执法</small></h2>
+
+    <h3>① 你的接入令牌</h3>
+    <p>agent 调用联盟接口的机读凭证（与游戏 apikey 无关，泄露只会暴露联盟名册，请妥善保管；被踢出后立即失效）：</p>
+    <div class="token-row">
+      <input type="text" id="roster-token" readonly value="加载中…">
+      <button class="btn sm" id="btn-copy-token">复制</button>
+    </div>
+
+    <h3>② 接口说明</h3>
+    <p><code>GET /api/alliance/roster</code>，认证二选一：请求头 <code>Authorization: Bearer &lt;令牌&gt;</code> 或查询参数 <code>?token=&lt;令牌&gt;</code>。返回：</p>
+    <pre>{
+  "success": true,
+  "data": {
+    "tick": 10583,                      // 名册对应的世界 Tick
+    "gameUsernames": ["suemubai", "alice"],   // 全体盟友游戏用户名（判 Core 归属用）
+    "allies": [
+      {
+        "gameUsername": "suemubai",
+        "online": true,                 // 该盟友 key 是否在线（离线时名册可能滞后）
+        "tick": 10583,
+        "core": {"id": "…", "pos": [12, 8]},
+        "objectIds": ["…", "…"],        // 该盟友当前存活的全部对象 ID（含 Core 与单位）
+        "units": [{"id": "…", "pos": [11, 8], "type": "WORKER"}]
+      }
+    ]
+  }
+}</pre>
+
+    <h3>③ 判定规则（agent 目标选择时依次检查）</h3>
+    <ol>
+      <li><span class="hl">可见 Core</span>：游戏 state 里敌方 Core 自带 <code>owner_username</code> —— 若在 <code>gameUsernames</code> 中 → <span class="hl">是盟友，禁止攻击</span>；</li>
+      <li><span class="hl">可见单位</span>：游戏不暴露单位归属 —— 用单位的 <code>id</code> 对照全部盟友的 <code>objectIds</code>，命中 → 盟友单位；</li>
+      <li><span class="hl">SWEEP/SHOOT 目标格</span>：出手前把目标格与 <code>allies[].units[].pos</code> / <code>allies[].core.pos</code> 比对，有盟友占格就换目标；</li>
+      <li>名册每 Tick 刷新，建议 agent <span class="hl">每 15 秒拉取一次并缓存</span>（一个 Tick 一次足够），请求失败时沿用上次缓存并保守处理（宁可不打）。</li>
+    </ol>
+
+    <h3>④ 示例</h3>
+    <p>curl：</p>
+    <pre>curl -s "https://你的平台地址/api/alliance/roster" \
+  -H "Authorization: Bearer 你的接入令牌"</pre>
+    <p>Python（接入 arena-hero-agent 一类的 agent）：</p>
+    <pre>import time, urllib.request, json
+
+ROSTER_URL = "https://你的平台地址/api/alliance/roster"
+TOKEN = "你的接入令牌"
+_cache = {"at": 0.0, "ids": set(), "names": set()}
+
+def refresh_roster():
+    req = urllib.request.Request(ROSTER_URL, headers={"Authorization": "Bearer " + TOKEN})
+    data = json.load(urllib.request.urlopen(req, timeout=5))["data"]
+    _cache["ids"] = {i for a in data["allies"] for i in a["objectIds"]}
+    _cache["names"] = set(data["gameUsernames"])
+    _cache["at"] = time.time()
+
+def is_ally(object_id=None, owner_username=None):
+    if time.time() - _cache["at"] > 15:
+        try:
+            refresh_roster()
+        except Exception:
+            pass  # 拉取失败沿用缓存，宁可保守
+    if owner_username and owner_username in _cache["names"]:
+        return True
+    return object_id is not None and object_id in _cache["ids"]
+
+# agent 攻击决策处：
+# if is_ally(object_id=target.id) or is_ally(owner_username=core.owner_username):
+#     continue  # 换目标，别打盟友</pre>
+  </div>
+</div>
+<script src="/js/api.js"></script>
+<script src="/js/nav.js"></script>
+<script>
+  (async function () {
+    let me;
+    try { me = await ensureLogin(); } catch (e) { return; }
+    renderTopbar('rules', me);
+    try {
+      const cfg = await api('/api/auth/config');
+      setAllianceName(cfg.allianceName);
+      document.title = '联盟规则 · ' + cfg.allianceName;
+    } catch (e) { }
+
+    // 公约（动态读取当前生效规则）
+    try {
+      const r = await api('/api/map/rules');
+      const punish = b => b ? '<span class="kick-tag">立即踢出</span>'
+        : (r.warnOnShieldDamage ? '<span class="warn-tag">记警告</span>' : '仅记录');
+      $id('covenant').innerHTML = `
+        <h3>一、成员身份判定</h3>
+        <p>登录本平台并在「我的 Key」上传游戏 apikey 后，平台接入游戏识别该 key 的游戏用户名——<span class="hl">该游戏账号即成为受保护的联盟成员</span>。
+        地图上带成员色标识的都是联盟单位，<span class="hl" style="color:var(--danger)">红色发光的均为非联盟单位（敌对）</span>。
+        被踢出者全部 key 停用、移出地图、不再受任何保护。程序化判定见下方「盟友判定接口」。</p>
+
+        <h3>二、互不侵犯</h3>
+        <p>禁止对任何联盟成员的单位或 Core 发起攻击（SWEEP 扫击指向成员所在格、SHOOT 射击成员所在格或锁定成员对象，均判定为攻击行为）。同一玩家的多个游戏账号之间不受此限。</p>
+
+        <h3>三、攻击抑制机制${r.interventionEnabled ? '' : '（当前已停用）'}</h3>
+        <ul>
+          <li>平台实时监审每位成员提交的作战计划，发现攻击成员的动作 → <span class="hl">立即用攻击者本人的 key 提交净化计划覆盖</span>（仅攻击动作改为 WAIT，其余动作原样保留）；</li>
+          <li>攻击方 agent 反复重提 → 平台持续覆盖，同一 Tick 内最多 <span class="hl">${r.maxOverridesPerTick} 次</span>；</li>
+          <li>网页手操（MANUAL）优先级高于 AGENT <span class="hl">无法覆盖</span>——将记录告警并进入伤亡裁决。</li>
+        </ul>
+
+        <h3>四、伤亡裁决与处罚</h3>
+        <p>每个 Tick 结算后，平台通过攻守双方战斗事件交叉归因（Core 摧毁者名单 / 命中目标 / 扫击格位）。对内攻击造成以下后果时：</p>
+        <ul>
+          <li>致成员单位死亡 → ${punish(r.kickOnUnitDeath)}</li>
+          <li>致成员 Core 掉血 → ${punish(r.kickOnCoreDamage)}</li>
+          <li>致成员 Core 被摧毁 → ${punish(r.kickOnCoreDestroyed)}</li>
+          <li>仅打掉护盾 / 单位受伤未死 → ${r.warnOnShieldDamage
+          ? '<span class="warn-tag">记警告</span>，累计 <span class="hl">' + r.kickAfterWarnings + '</span> 次自动踢出' : '仅记录'}</li>
+        </ul>
+        <p>全部拦截、警告、踢出记录在地图页「事件流」对全员公开，可作申诉依据；管理员可复核并恢复成员资格（key 需本人重新启用）。</p>
+
+        <h3>五、外部威胁</h3>
+        <p>${r.externalAlert
+          ? '非联盟玩家攻击成员时，地图打红色脉冲标记并在事件流通报。'
+          : '外部攻击告警当前已关闭。'}平台没有外部玩家的 key，<span class="hl">无法代为拦截外部攻击</span>，请各自维持防线并按告警互相支援。</p>
+
+        <h3>六、其他约定</h3>
+        <ul>
+          <li>key 失效（改密/撤销）会失去保护并触发告警，请及时更换；</li>
+          <li>同一游戏账号上传多个 key 时只保留一条连接；</li>
+          <li>新成员注册${r.registrationOpen ? '开放中' : '已关闭'}${r.minTrustLevel > 0 ? '（LinuxDo 信任等级 ≥ ' + r.minTrustLevel + '）' : ''}。</li>
+        </ul>`;
+    } catch (e) {
+      $id('covenant').textContent = '公约加载失败：' + e.message;
+    }
+
+    // 接入令牌
+    try {
+      const t = await api('/api/keys/roster-token');
+      $id('roster-token').value = t.token;
+    } catch (e) {
+      $id('roster-token').value = '获取失败：' + e.message;
+    }
+    $id('btn-copy-token').onclick = async () => {
+      try {
+        await navigator.clipboard.writeText($id('roster-token').value);
+        toast('已复制');
+      } catch (e) {
+        $id('roster-token').select();
+        document.execCommand('copy');
+        toast('已复制');
+      }
+    };
+  })();
+</script>
+</body>
+</html>

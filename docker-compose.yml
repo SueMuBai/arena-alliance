@@ -1,0 +1,43 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: alliance
+      POSTGRES_USER: alliance
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-alliance}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U alliance -d alliance"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      DB_URL: jdbc:postgresql://db:5432/alliance
+      DB_USER: alliance
+      DB_PASSWORD: ${DB_PASSWORD:-alliance}
+      DB_POOL_SIZE: 10
+      LINUXDO_CLIENT_ID: ${LINUXDO_CLIENT_ID:-}
+      LINUXDO_CLIENT_SECRET: ${LINUXDO_CLIENT_SECRET:-}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      ALLIANCE_SECRET: ${ALLIANCE_SECRET:-}
+      ARENA_API_BASE: ${ARENA_API_BASE:-https://api.arenahero.io}
+      # 网络代理（可选）：容器内访问 connect.linux.do / 游戏 API 走代理
+      OAUTH_PROXY: ${OAUTH_PROXY:-}
+      GAME_PROXY: ${GAME_PROXY:-}
+    volumes:
+      - appdata:/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  appdata:

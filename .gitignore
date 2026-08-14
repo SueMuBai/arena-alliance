@@ -1,0 +1,9 @@
+target/
+data/
+*.log
+.env
+.idea/
+*.iml
+.vscode/
+.claude/settings.local.json
+参考资料/

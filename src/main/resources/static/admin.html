@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>管理后台 · Arena 联盟</title>
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<div class="topbar" id="topbar"></div>
+<div class="page">
+  <div class="card">
+    <h2>概览</h2>
+    <div id="overview" style="display:flex;gap:12px;flex-wrap:wrap"></div>
+  </div>
+
+  <div class="card">
+    <h2>联盟规则 <small>修改后立即生效</small></h2>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 28px">
+      <div>
+        <label class="field"><span class="lab">联盟名称</span>
+          <input type="text" id="r-allianceName"></label>
+        <label class="check"><input type="checkbox" id="r-interventionEnabled">
+          启用内部攻击实时拦截 <small>用攻击者自己的 key 覆盖其攻击指令</small></label>
+        <label class="field"><span class="lab">每 Tick 最大覆盖次数<br>
+          <small style="color:var(--dim)">攻击者 agent 在同一 Tick 反复重提攻击计划时，平台跟它"拉锯"的上限。服务器每玩家每 Tick 只收 64 次提交（双方共享配额），设上限防止把配额打满</small></span>
+          <input type="number" id="r-maxOverridesPerTick" min="1" max="30"></label>
+        <label class="check"><input type="checkbox" id="r-externalAlert">
+          外部攻击告警 <small>外部玩家攻击成员时推送告警</small></label>
+        <label class="field"><span class="lab">LinuxDo 最低信任等级</span>
+          <input type="number" id="r-minTrustLevel" min="0" max="4"></label>
+        <label class="check"><input type="checkbox" id="r-registrationOpen">
+          开放新成员注册</label>
+        <label class="check"><input type="checkbox" id="r-allowPasswordRegister">
+          允许账号密码注册 <small>关闭时仅 LinuxDo 登录；首个用户注册不受限</small></label>
+      </div>
+      <div>
+        <div style="color:var(--dim);font-size:12px;margin-bottom:8px">踢出条件（内部攻击造成伤亡时）</div>
+        <label class="check"><input type="checkbox" id="r-kickOnUnitDeath">
+          致对方单位死亡 → 立即踢出</label>
+        <label class="check"><input type="checkbox" id="r-kickOnCoreDamage">
+          致对方 Core 掉血 → 立即踢出</label>
+        <label class="check"><input type="checkbox" id="r-kickOnCoreDestroyed">
+          致对方 Core 被摧毁 → 立即踢出</label>
+        <label class="check"><input type="checkbox" id="r-warnOnShieldDamage">
+          仅打掉护盾/单位掉血未死 → 记警告</label>
+        <label class="field"><span class="lab">警告累计多少次自动踢出</span>
+          <input type="number" id="r-kickAfterWarnings" min="1" max="99"></label>
+      </div>
+    </div>
+    <button class="btn primary" id="btn-save-rules">保存规则</button>
+  </div>
+
+  <div class="card">
+    <h2>成员管理</h2>
+    <table>
+      <thead>
+      <tr>
+        <th>成员</th><th>角色</th><th>状态</th><th>警告</th><th>游戏账号(key)</th>
+        <th>注册时间</th><th style="width:230px">操作</th>
+      </tr>
+      </thead>
+      <tbody id="member-rows"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>事件审计 <small>最近 200 条</small></h2>
+    <table>
+      <thead>
+      <tr><th>时间</th><th>Tick</th><th>类型</th><th>攻击者</th><th>目标</th><th>详情</th></tr>
+      </thead>
+      <tbody id="incident-rows"></tbody>
+    </table>
+  </div>
+</div>
+<script src="/js/api.js"></script>
+<script src="/js/nav.js"></script>
+<script>
+  (async function () {
+    let me;
+    try { me = await ensureLogin(); } catch (e) { return; }
+    if (me.role !== 'ADMIN') { location.href = '/'; return; }
+    renderTopbar('admin', me);
+
+    const RULE_BOOLS = ['interventionEnabled', 'externalAlert', 'registrationOpen', 'allowPasswordRegister',
+      'kickOnUnitDeath', 'kickOnCoreDamage', 'kickOnCoreDestroyed', 'warnOnShieldDamage'];
+    const RULE_NUMS = ['maxOverridesPerTick', 'minTrustLevel', 'kickAfterWarnings'];
+    const TYPE_LABEL = {
+      INTERNAL_ATTACK_BLOCKED: '拦截', INTERNAL_ATTACK_DETECTED: '检测',
+      INTERNAL_ATTACK_MANUAL: '手操攻击', OVERRIDE_LIMIT: '覆盖上限',
+      INTERNAL_CASUALTY: '内部伤亡', WARNING: '警告', KICK: '踢出',
+      RESTORE: '恢复', EXTERNAL_ATTACK: '外部攻击', KEY_INVALID: 'key失效',
+      KEY_DUPLICATE: 'key重复', INFO: '信息'
+    };
+
+    async function loadRules() {
+      const r = await api('/api/admin/rules');
+      $id('r-allianceName').value = r.allianceName || '';
+      RULE_BOOLS.forEach(k => $id('r-' + k).checked = !!r[k]);
+      RULE_NUMS.forEach(k => $id('r-' + k).value = r[k]);
+      setAllianceName(r.allianceName);
+    }
+
+    $id('btn-save-rules').onclick = async () => {
+      const patch = { allianceName: $id('r-allianceName').value.trim() || 'Arena 联盟' };
+      RULE_BOOLS.forEach(k => patch[k] = $id('r-' + k).checked);
+      RULE_NUMS.forEach(k => patch[k] = parseInt($id('r-' + k).value, 10) || 0);
+      try {
+        await api('/api/admin/rules', { method: 'PUT', body: JSON.stringify(patch) });
+        toast('规则已保存并生效');
+        loadRules();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    };
+
+    async function loadOverview() {
+      const o = await api('/api/admin/overview');
+      $id('overview').innerHTML =
+        `<span class="badge">世界 Tick <b>${o.tick}</b></span>
+         <span class="badge">在线会话 <b>${o.sessions}</b></span>
+         <span class="badge">成员数 <b>${o.members}</b></span>
+         <span class="badge">地图观看者 <b>${o.sseClients}</b></span>`;
+    }
+
+    async function loadMembers() {
+      const members = await api('/api/admin/members');
+      $id('member-rows').innerHTML = members.map(m => {
+        const st = m.status === 'ACTIVE' ? '<span class="status-pill on">正常</span>'
+          : m.status === 'KICKED' ? '<span class="status-pill err">已踢出</span>'
+            : '<span class="status-pill err">已封禁</span>';
+        const keys = (m.keys || []).map(k =>
+          `<div style="white-space:nowrap">${k.online ? '<span class="dot on"></span>' : '<span class="dot"></span>'}` +
+          `${k.gameUsername ? '@' + esc(k.gameUsername) : esc(k.masked)} ` +
+          `<span class="status-pill">${k.status}</span></div>`).join('');
+        const actions = [];
+        if (m.role !== 'ADMIN') {
+          if (m.status === 'ACTIVE') {
+            actions.push(`<button class="btn sm danger" data-act="kick" data-id="${m.id}">踢出</button>`);
+          } else if (m.status === 'KICKED') {
+            actions.push(`<button class="btn sm" data-act="restore" data-id="${m.id}">恢复</button>`);
+          }
+        }
+        if (m.warnings > 0) {
+          actions.push(`<button class="btn sm" data-act="reset-warnings" data-id="${m.id}">清零警告</button>`);
+        }
+        return `<tr>
+          <td><b>${esc(m.username)}</b><div style="color:var(--dim);font-size:12px">${esc(m.displayName || '')}</div></td>
+          <td>${m.role === 'ADMIN' ? '<span class="status-pill warn">管理员</span>' : '成员'}</td>
+          <td>${st}</td>
+          <td>${m.warnings > 0 ? '<span style="color:var(--warn)">' + m.warnings + '</span>' : 0}</td>
+          <td>${keys || '<span style="color:var(--dim)">无</span>'}</td>
+          <td style="color:var(--dim);font-size:12px">${fmtTime(m.createdAt)}</td>
+          <td>${actions.join(' ')}</td>
+        </tr>`;
+      }).join('');
+      $id('member-rows').querySelectorAll('button').forEach(btn => {
+        btn.onclick = async () => {
+          const act = btn.dataset.act, id = btn.dataset.id;
+          if (act === 'kick' && !confirm('确定将该成员踢出联盟？其全部 key 将停用。')) return;
+          try {
+            await api(`/api/admin/members/${id}/${act}`, { method: 'POST' });
+            toast('操作成功');
+            loadMembers();
+          } catch (e) {
+            toast(e.message, true);
+          }
+        };
+      });
+    }
+
+    async function loadIncidents() {
+      const list = await api('/api/admin/incidents?limit=200');
+      $id('incident-rows').innerHTML = list.map(i => `<tr>
+        <td style="white-space:nowrap;color:var(--dim)">${fmtTime(i.createdAt)}</td>
+        <td>${i.tick ?? ''}</td>
+        <td>${TYPE_LABEL[i.type] || i.type}</td>
+        <td>${i.attackerName ? '@' + esc(i.attackerName) : ''}</td>
+        <td>${i.victimName ? '@' + esc(i.victimName) : ''}</td>
+        <td style="color:var(--dim)">${esc(i.detail || '')}</td>
+      </tr>`).join('');
+    }
+
+    await loadRules();
+    await Promise.all([loadOverview(), loadMembers(), loadIncidents()]);
+    setInterval(() => { loadOverview(); loadMembers(); }, 10000);
+    setInterval(loadIncidents, 15000);
+  })();
+</script>
+</body>
+</html>

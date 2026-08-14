@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Arena 联盟指挥中心</title>
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<div class="topbar" id="topbar"></div>
+<div class="main">
+  <div class="map-wrap">
+    <canvas id="map"></canvas>
+    <div class="legend" id="legend">
+      <div class="lg-head" id="legend-toggle"><span>图例</span><span id="legend-arrow">▾</span></div>
+      <div class="lg-body">
+        <div class="li"><span class="sw core" style="background:#4da3ff"></span>Core（成员色 · 白边 · 蓝弧=护盾 · 掉血显血条）</div>
+        <div class="li"><span class="sw worker" style="background:#a6cfff"></span>Worker 工兵（浅色圆 · 带货=金点）</div>
+        <div class="li"><span class="sw vanguard" style="background:#4da3ff"></span>Vanguard 先锋（盾形）</div>
+        <div class="li"><span class="sw ranger" style="background:#2f6cb3"></span>Ranger 游侠（深色准星）</div>
+        <div class="li"><span class="sw core" style="background:#ff5062;box-shadow:0 0 6px #ff5062"></span>非联盟单位（敌对 · 红色发光）</div>
+        <div class="li"><span class="sw res"></span>资源点</div>
+        <div class="li"><span class="sw obs"></span>障碍地形（联盟探索记忆）</div>
+        <div class="li"><span class="sw beacon"></span>冠军信标</div>
+        <div class="li"><span class="sw pulse"></span>告警脉冲（红=伤亡/外敌 黄=拦截）</div>
+        <div class="lg-note">每位成员一种颜色，深浅与形状区分角色；离线成员半透明</div>
+      </div>
+    </div>
+    <div class="map-hud">
+      <button class="btn sm" id="btn-center">回到原点</button>
+      <button class="btn sm" id="btn-beacon">⭐ 信标</button>
+      <span id="hud-pos"></span>
+      <span>拖拽平移 · 滚轮缩放 · 点击成员定位</span>
+    </div>
+  </div>
+  <div class="sidebar">
+    <div class="tabs">
+      <button id="tab-members" class="active">成员</button>
+      <button id="tab-feed">事件流</button>
+    </div>
+    <div class="tab-body" id="panel-members"></div>
+    <div class="tab-body" id="panel-feed" style="display:none"></div>
+  </div>
+</div>
+<script src="/js/api.js"></script>
+<script src="/js/nav.js"></script>
+<script src="/js/map.js"></script>
+</body>
+</html>
