@@ -48,6 +48,14 @@ public class ApiKey {
     @Column(name = "last_seen_tick")
     private Long lastSeenTick;
 
+    /** 是否在联盟地图成员图层显示自己的 Core；null 兼容升级前的旧数据。 */
+    @Column(name = "show_core_on_map")
+    private Boolean showCoreOnMap = Boolean.TRUE;
+
+    /** 盟友名册是否只暴露对象 ID，不返回坐标和单位类型；null 兼容旧数据。 */
+    @Column(name = "roster_ids_only")
+    private Boolean rosterIdsOnly = Boolean.FALSE;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Instant.now();
 
@@ -117,6 +125,22 @@ public class ApiKey {
 
     public void setLastSeenTick(Long lastSeenTick) {
         this.lastSeenTick = lastSeenTick;
+    }
+
+    public boolean isShowCoreOnMap() {
+        return showCoreOnMap == null || showCoreOnMap;
+    }
+
+    public void setShowCoreOnMap(boolean showCoreOnMap) {
+        this.showCoreOnMap = showCoreOnMap;
+    }
+
+    public boolean isRosterIdsOnly() {
+        return Boolean.TRUE.equals(rosterIdsOnly);
+    }
+
+    public void setRosterIdsOnly(boolean rosterIdsOnly) {
+        this.rosterIdsOnly = rosterIdsOnly;
     }
 
     public Instant getCreatedAt() {

@@ -1,5 +1,6 @@
 package com.arena.alliance.map;
 
+import com.arena.alliance.apikey.ApiKeyService;
 import com.arena.alliance.auth.SessionService;
 import com.arena.alliance.common.AllianceException;
 import com.arena.alliance.common.ApiResponse;
@@ -33,13 +34,16 @@ public class AllianceRosterController {
 
     private final SessionService sessionService;
     private final UserRepository userRepository;
+    private final ApiKeyService apiKeyService;
     private final WorldAggregator aggregator;
     private final AllianceEngine engine;
 
     public AllianceRosterController(SessionService sessionService, UserRepository userRepository,
-                                    WorldAggregator aggregator, AllianceEngine engine) {
+                                    ApiKeyService apiKeyService, WorldAggregator aggregator,
+                                    AllianceEngine engine) {
         this.sessionService = sessionService;
         this.userRepository = userRepository;
+        this.apiKeyService = apiKeyService;
         this.aggregator = aggregator;
         this.engine = engine;
     }
@@ -60,18 +64,26 @@ public class AllianceRosterController {
         if (user == null || user.getStatus() != User.Status.ACTIVE) {
             throw AllianceException.forbidden("成员资格已失效");
         }
+        apiKeyService.requireUploadedKey(userId);
 
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("tick", aggregator.maxTick());
         Set<String> gameUsernames = new LinkedHashSet<>();
         List<Map<String, Object>> allies = new ArrayList<>();
 
-        for (WorldAggregator.MemberSnapshot m : aggregator.members().values()) {
+        Map<Long, WorldAggregator.MemberSnapshot> memberSnapshots = aggregator.members();
+        Map<Long, ApiKeyService.PrivacySettings> privacyByKey =
+                apiKeyService.privacySettings(memberSnapshots.keySet());
+
+        for (WorldAggregator.MemberSnapshot m : memberSnapshots.values()) {
+            ApiKeyService.PrivacySettings privacy = privacyByKey.getOrDefault(
+                    m.keyId(), ApiKeyService.PrivacySettings.DEFAULT);
             Map<String, Object> am = new LinkedHashMap<>();
             am.put("gameUsername", m.gameUsername());
             am.put("userId", m.userId());
             am.put("online", engine.isKeyOnline(m.keyId()));
             am.put("tick", m.tick());
+            am.put("idsOnly", privacy.rosterIdsOnly());
             if (m.gameUsername() != null) {
                 gameUsernames.add(m.gameUsername());
             }
@@ -86,13 +98,17 @@ public class AllianceRosterController {
                     if (o.isCore()) {
                         Map<String, Object> cm = new LinkedHashMap<>();
                         cm.put("id", o.id());
-                        cm.put("pos", pos(o.position()));
+                        if (!privacy.rosterIdsOnly()) {
+                            cm.put("pos", pos(o.position()));
+                        }
                         am.put("core", cm);
                     } else if (o.isUnit()) {
                         Map<String, Object> um = new LinkedHashMap<>();
                         um.put("id", o.id());
-                        um.put("pos", pos(o.position()));
-                        um.put("type", o.unitType());
+                        if (!privacy.rosterIdsOnly()) {
+                            um.put("pos", pos(o.position()));
+                            um.put("type", o.unitType());
+                        }
                         units.add(um);
                     }
                 }

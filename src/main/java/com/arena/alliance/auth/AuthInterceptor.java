@@ -1,5 +1,6 @@
 package com.arena.alliance.auth;
 
+import com.arena.alliance.apikey.ApiKeyService;
 import com.arena.alliance.user.User;
 import com.arena.alliance.user.UserRepository;
 import jakarta.servlet.http.Cookie;
@@ -15,16 +16,20 @@ import java.nio.charset.StandardCharsets;
  * - /api/auth/** 放行（其内部自行处理可选会话）
  * - /api/admin/** 需要管理员
  * - 被踢成员禁止访问地图数据
+ * - 未上传游戏 key 的用户禁止访问联盟地图页和地图数据
  */
 @Component
 public class AuthInterceptor implements HandlerInterceptor {
 
     private final SessionService sessionService;
     private final UserRepository userRepository;
+    private final ApiKeyService apiKeyService;
 
-    public AuthInterceptor(SessionService sessionService, UserRepository userRepository) {
+    public AuthInterceptor(SessionService sessionService, UserRepository userRepository,
+                           ApiKeyService apiKeyService) {
         this.sessionService = sessionService;
         this.userRepository = userRepository;
+        this.apiKeyService = apiKeyService;
     }
 
     @Override
@@ -37,10 +42,18 @@ public class AuthInterceptor implements HandlerInterceptor {
         }
         Long userId = sessionService.verify(readSessionCookie(request));
         if (userId == null) {
+            if (isMapPage(path)) {
+                response.sendRedirect("/login.html");
+                return false;
+            }
             return reject(response, 401, "未登录");
         }
         User user = userRepository.findById(userId).orElse(null);
         if (user == null) {
+            if (isMapPage(path)) {
+                response.sendRedirect("/login.html");
+                return false;
+            }
             return reject(response, 401, "用户不存在");
         }
         if (user.getStatus() == User.Status.BANNED) {
@@ -49,11 +62,26 @@ public class AuthInterceptor implements HandlerInterceptor {
         if (path.startsWith("/api/admin/") && !user.isAdmin()) {
             return reject(response, 403, "需要管理员权限");
         }
-        if (user.getStatus() == User.Status.KICKED && path.startsWith("/api/map/")) {
+        if (user.getStatus() == User.Status.KICKED && isProtectedMapPath(path)) {
             return reject(response, 403, "你已被移出联盟，无法查看联盟地图");
+        }
+        if (isProtectedMapPath(path) && !apiKeyService.hasUploadedKey(userId)) {
+            if (isMapPage(path)) {
+                response.sendRedirect("/keys.html?required=map");
+                return false;
+            }
+            return reject(response, 403, "请先上传一个游戏 Key 后再访问联盟地图");
         }
         request.setAttribute(CurrentUser.ATTR, new CurrentUser(user.getId(), user.getUsername(), user.isAdmin()));
         return true;
+    }
+
+    private static boolean isProtectedMapPath(String path) {
+        return isMapPage(path) || (path.startsWith("/api/map/") && !path.equals("/api/map/rules"));
+    }
+
+    private static boolean isMapPage(String path) {
+        return "/".equals(path) || "/index.html".equals(path);
     }
 
     static String readSessionCookie(HttpServletRequest request) {

@@ -1,8 +1,8 @@
 package com.arena.alliance.map;
 
-import com.arena.alliance.apikey.ApiKey;
 import com.arena.alliance.apikey.ApiKeyService;
 import com.arena.alliance.engine.AllianceEngine;
+import com.arena.alliance.engine.EngineEvents;
 import com.arena.alliance.engine.WorldAggregator;
 import com.arena.alliance.game.dto.Cell;
 import com.arena.alliance.game.dto.GameObject;
@@ -12,13 +12,17 @@ import com.arena.alliance.user.User;
 import com.arena.alliance.user.UserService;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.event.TransactionPhase;
+import org.springframework.transaction.event.TransactionalEventListener;
 
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 把聚合世界组装成前端快照 JSON；世界版本变化时经 SSE 推送。
@@ -55,6 +59,12 @@ public class MapSnapshotService {
         sse.broadcastSnapshot(build());
     }
 
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    public void onKeyPrivacyChanged(EngineEvents.KeyPrivacyChanged event) {
+        // 下一次 pump 即使游戏世界未变化，也要重新组装一次快照。
+        lastPushedVersion = -1;
+    }
+
     public Map<String, Object> build() {
         Map<String, Object> snapshot = new LinkedHashMap<>();
         snapshot.put("tick", aggregator.maxTick());
@@ -66,8 +76,16 @@ public class MapSnapshotService {
             users.put(u.getId(), u);
         }
 
+        Map<Long, WorldAggregator.MemberSnapshot> memberSnapshots = aggregator.members();
+        Map<Long, ApiKeyService.PrivacySettings> privacyByKey =
+                apiKeyService.privacySettings(memberSnapshots.keySet());
+        Set<String> hiddenCoreIds = new HashSet<>();
+        Set<String> hiddenCoreOwners = new HashSet<>();
+
         List<Map<String, Object>> members = new ArrayList<>();
-        for (WorldAggregator.MemberSnapshot m : aggregator.members().values()) {
+        for (WorldAggregator.MemberSnapshot m : memberSnapshots.values()) {
+            ApiKeyService.PrivacySettings privacy = privacyByKey.getOrDefault(
+                    m.keyId(), ApiKeyService.PrivacySettings.DEFAULT);
             Map<String, Object> mm = new LinkedHashMap<>();
             mm.put("keyId", m.keyId());
             mm.put("userId", m.userId());
@@ -83,7 +101,7 @@ public class MapSnapshotService {
             mm.put("population", state.population());
             mm.put("resources", state.resources());
             GameObject core = state.controlledCore();
-            if (core != null) {
+            if (core != null && privacy.showCoreOnMap()) {
                 Map<String, Object> cm = new LinkedHashMap<>();
                 cm.put("id", core.id());
                 cm.put("pos", cells(core.position()));
@@ -91,6 +109,13 @@ public class MapSnapshotService {
                 cm.put("shield", core.shield());
                 cm.put("state", core.state());
                 mm.put("core", cm);
+            } else if (core != null) {
+                if (core.id() != null) {
+                    hiddenCoreIds.add(core.id());
+                }
+                if (m.gameUsername() != null) {
+                    hiddenCoreOwners.add(m.gameUsername());
+                }
             }
             List<Map<String, Object>> units = new ArrayList<>();
             if (state.objects() != null) {
@@ -115,6 +140,10 @@ public class MapSnapshotService {
 
         List<Map<String, Object>> enemies = new ArrayList<>();
         for (WorldAggregator.EnemySighting e : aggregator.enemies().values()) {
+            if (hiddenCoreIds.contains(e.id())
+                    || ("CORE".equals(e.kind()) && hiddenCoreOwners.contains(e.ownerUsername()))) {
+                continue;
+            }
             Map<String, Object> em = new LinkedHashMap<>();
             em.put("id", e.id());
             em.put("kind", e.kind());

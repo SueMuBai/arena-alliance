@@ -9,10 +9,17 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class ApiKeyService {
+
+    public record PrivacySettings(boolean showCoreOnMap, boolean rosterIdsOnly) {
+        public static final PrivacySettings DEFAULT = new PrivacySettings(true, false);
+    }
 
     private static final Logger log = LoggerFactory.getLogger(ApiKeyService.class);
 
@@ -75,6 +82,20 @@ public class ApiKeyService {
     }
 
     @Transactional
+    public ApiKey setPrivacy(long requesterId, long keyId,
+                             boolean showCoreOnMap, boolean rosterIdsOnly) {
+        ApiKey key = find(keyId);
+        if (!key.getUserId().equals(requesterId)) {
+            throw AllianceException.forbidden("无权修改他人的隐私设置");
+        }
+        key.setShowCoreOnMap(showCoreOnMap);
+        key.setRosterIdsOnly(rosterIdsOnly);
+        repository.save(key);
+        publisher.publishEvent(new EngineEvents.KeyPrivacyChanged(keyId));
+        return key;
+    }
+
+    @Transactional
     public void markInvalid(long keyId, String error) {
         repository.findById(keyId).ifPresent(key -> {
             key.setStatus(ApiKey.Status.INVALID);
@@ -130,6 +151,30 @@ public class ApiKeyService {
 
     public List<ApiKey> listByUser(long userId) {
         return repository.findByUserIdOrderByIdAsc(userId);
+    }
+
+    /** 批量读取地图/名册隐私配置，避免快照组装时逐 key 查询。 */
+    public Map<Long, PrivacySettings> privacySettings(Collection<Long> keyIds) {
+        if (keyIds == null || keyIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, PrivacySettings> settings = new HashMap<>();
+        for (ApiKey key : repository.findAllById(keyIds)) {
+            settings.put(key.getId(), new PrivacySettings(key.isShowCoreOnMap(), key.isRosterIdsOnly()));
+        }
+        return settings;
+    }
+
+    /** 是否至少上传过一个游戏 key（不区分连接状态）。 */
+    public boolean hasUploadedKey(long userId) {
+        return repository.existsByUserId(userId);
+    }
+
+    /** 联盟地图和盟友名册的统一准入检查。 */
+    public void requireUploadedKey(long userId) {
+        if (!hasUploadedKey(userId)) {
+            throw AllianceException.forbidden("请先上传一个游戏 Key");
+        }
     }
 
     public List<ApiKey> enabledKeys() {

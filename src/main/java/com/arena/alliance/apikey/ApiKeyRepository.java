@@ -9,6 +9,8 @@ public interface ApiKeyRepository extends JpaRepository<ApiKey, Long> {
 
     List<ApiKey> findByUserIdOrderByIdAsc(Long userId);
 
+    boolean existsByUserId(Long userId);
+
     Optional<ApiKey> findByTokenHash(String tokenHash);
 
     List<ApiKey> findByStatus(ApiKey.Status status);

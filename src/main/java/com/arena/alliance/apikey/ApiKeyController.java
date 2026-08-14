@@ -1,6 +1,7 @@
 package com.arena.alliance.apikey;
 
 import com.arena.alliance.auth.CurrentUser;
+import com.arena.alliance.common.AllianceException;
 import com.arena.alliance.common.ApiResponse;
 import com.arena.alliance.engine.AllianceEngine;
 import jakarta.servlet.http.HttpServletRequest;
@@ -24,6 +25,9 @@ public class ApiKeyController {
     public record AddKeyRequest(@NotBlank String token, String label) {
     }
 
+    public record PrivacyRequest(Boolean showCoreOnMap, Boolean rosterIdsOnly) {
+    }
+
     private final ApiKeyService apiKeyService;
     private final AllianceEngine engine;
     private final com.arena.alliance.auth.SessionService sessionService;
@@ -39,6 +43,7 @@ public class ApiKeyController {
     @GetMapping("/roster-token")
     public ApiResponse<Map<String, Object>> rosterToken(HttpServletRequest request) {
         CurrentUser me = current(request);
+        apiKeyService.requireUploadedKey(me.id());
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("token", sessionService.issueRosterToken(me.id()));
         return ApiResponse.ok(m);
@@ -80,6 +85,17 @@ public class ApiKeyController {
         return ApiResponse.ok(view(apiKeyService.setEnabled(me.id(), me.admin(), id, false)));
     }
 
+    @PostMapping("/{id}/privacy")
+    public ApiResponse<Map<String, Object>> privacy(HttpServletRequest request, @PathVariable long id,
+                                                    @RequestBody PrivacyRequest body) {
+        if (body == null || body.showCoreOnMap() == null || body.rosterIdsOnly() == null) {
+            throw AllianceException.badRequest("隐私设置不完整");
+        }
+        CurrentUser me = current(request);
+        return ApiResponse.ok(view(apiKeyService.setPrivacy(me.id(), id,
+                body.showCoreOnMap(), body.rosterIdsOnly())));
+    }
+
     private Map<String, Object> view(ApiKey key) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", key.getId());
@@ -90,6 +106,8 @@ public class ApiKeyController {
         m.put("online", engine.isKeyOnline(key.getId()));
         m.put("lastSeenTick", key.getLastSeenTick());
         m.put("lastError", key.getLastError());
+        m.put("showCoreOnMap", key.isShowCoreOnMap());
+        m.put("rosterIdsOnly", key.isRosterIdsOnly());
         m.put("createdAt", key.getCreatedAt() == null ? null : key.getCreatedAt().toString());
         return m;
     }

@@ -591,6 +591,10 @@
     try {
       state.me = await ensureLogin();
     } catch (e) { return; }
+    if (!state.me.hasGameKey) {
+      location.replace('/keys.html?required=map');
+      return;
+    }
     renderTopbar('map', state.me,
       '<span class="badge" id="hud-tick">Tick <b>-</b></span><span class="badge" id="hud-sse"><span class="dot"></span>连接中</span>');
     if (state.me.status === 'KICKED') {

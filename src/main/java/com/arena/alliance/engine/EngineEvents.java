@@ -16,6 +16,10 @@ public final class EngineEvents {
     public record KeyDeactivated(long keyId) {
     }
 
+    /** key 的地图/名册隐私设置变化 → 地图快照应尽快刷新 */
+    public record KeyPrivacyChanged(long keyId) {
+    }
+
     /** 成员被踢出联盟 → 引擎停止其全部会话 */
     public record MemberKicked(long userId, String reason) {
     }

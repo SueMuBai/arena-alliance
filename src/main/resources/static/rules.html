@@ -63,6 +63,7 @@
         "gameUsername": "suemubai",
         "online": true,                 // 该盟友 key 是否在线（离线时名册可能滞后）
         "tick": 10583,
+        "idsOnly": false,               // true 时 core/units 只包含 id，不返回坐标或类型
         "core": {"id": "…", "pos": [12, 8]},
         "objectIds": ["…", "…"],        // 该盟友当前存活的全部对象 ID（含 Core 与单位）
         "units": [{"id": "…", "pos": [11, 8], "type": "WORKER"}]
@@ -70,6 +71,9 @@
     ]
   }
 }</pre>
+    <p>每个成员可在「我的 Key」中把名册隐私设为“仅返回对象 ID”。开启后仍返回
+      <code>gameUsername</code> 和 <code>objectIds</code> 供盟友判断，但 <code>core</code> / <code>units</code>
+      中只保留 <code>id</code>，不发送坐标和单位类型。</p>
 
     <h3>③ 判定规则（agent 目标选择时依次检查）</h3>
     <ol>
@@ -172,12 +176,18 @@ def is_ally(object_id=None, owner_username=None):
       $id('covenant').textContent = '公约加载失败：' + e.message;
     }
 
-    // 接入令牌
-    try {
-      const t = await api('/api/keys/roster-token');
-      $id('roster-token').value = t.token;
-    } catch (e) {
-      $id('roster-token').value = '获取失败：' + e.message;
+    // 只有已上传游戏 key 的成员才能获取和使用盟友名册令牌
+    if (!me.hasGameKey) {
+      $id('roster-token').value = '请先在「我的 Key」上传一个游戏 Key';
+      $id('btn-copy-token').disabled = true;
+    } else {
+      try {
+        const t = await api('/api/keys/roster-token');
+        $id('roster-token').value = t.token;
+      } catch (e) {
+        $id('roster-token').value = '获取失败：' + e.message;
+        $id('btn-copy-token').disabled = true;
+      }
     }
     $id('btn-copy-token').onclick = async () => {
       try {

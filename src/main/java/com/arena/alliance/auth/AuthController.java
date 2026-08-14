@@ -1,5 +1,6 @@
 package com.arena.alliance.auth;
 
+import com.arena.alliance.apikey.ApiKeyService;
 import com.arena.alliance.common.AllianceException;
 import com.arena.alliance.common.ApiResponse;
 import com.arena.alliance.config.AllianceProperties;
@@ -35,15 +36,18 @@ public class AuthController {
     private final UserRepository userRepository;
     private final RuleService ruleService;
     private final SessionService sessionService;
+    private final ApiKeyService apiKeyService;
 
     public AuthController(AllianceProperties props, LinuxDoOAuthService oauth, UserService userService,
-                          UserRepository userRepository, RuleService ruleService, SessionService sessionService) {
+                          UserRepository userRepository, RuleService ruleService, SessionService sessionService,
+                          ApiKeyService apiKeyService) {
         this.props = props;
         this.oauth = oauth;
         this.userService = userService;
         this.userRepository = userRepository;
         this.ruleService = ruleService;
         this.sessionService = sessionService;
+        this.apiKeyService = apiKeyService;
     }
 
     /** 登录页所需的公开配置 */
@@ -152,6 +156,7 @@ public class AuthController {
         m.put("role", user.getRole().name());
         m.put("status", user.getStatus().name());
         m.put("warnings", user.getWarnings());
+        m.put("hasGameKey", apiKeyService.hasUploadedKey(user.getId()));
         return ApiResponse.ok(m);
     }
 
