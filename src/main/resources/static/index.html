@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Arena 联盟指挥中心</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/css/app.css">
 </head>
 <body>
@@ -11,6 +12,15 @@
 <div class="main">
   <div class="map-wrap">
     <canvas id="map"></canvas>
+    <!-- 游戏指令窗口：服务端剩余时间 + 前端单调倒计时 -->
+    <div class="tick-window" id="tick-window">
+      <div class="tw-row"><span id="tw-label">Tick - · 指令窗口</span><b id="tw-remaining">--.-s</b></div>
+      <div class="tw-track"><i id="tw-progress"></i></div>
+    </div>
+    <div class="targeting-prompt" id="targeting-prompt" style="display:none">
+      <span class="target-icon">◎</span><span id="targeting-text">选择目标格</span>
+      <button class="btn sm" id="targeting-cancel">取消</button>
+    </div>
     <div class="legend" id="legend">
       <div class="lg-head" id="legend-toggle"><span>图例</span><span id="legend-arrow">▾</span></div>
       <div class="lg-body">
@@ -34,6 +44,31 @@
       <span>拖拽平移 · 滚轮缩放 · 点击成员/单位选中</span>
     </div>
     <div class="map-tooltip" id="map-tooltip"></div>
+    <div class="object-picker" id="object-picker" style="display:none"></div>
+
+    <!-- 人工接管控制条（仅托管账号可用） -->
+    <div class="manual-bar" id="manual-bar" style="display:none">
+      <label class="manual-switch">
+        <input type="checkbox" id="manual-toggle">
+        <span>🎮 人工接管</span>
+      </label>
+      <select id="manual-account" class="manual-account" style="display:none"></select>
+      <span class="manual-hint" id="manual-hint"></span>
+    </div>
+
+    <!-- 单位操作面板 -->
+    <div class="action-panel" id="action-panel" style="display:none">
+      <div class="ap-head">
+        <span id="ap-title">对象</span>
+        <button class="btn sm" id="ap-close">✕</button>
+      </div>
+      <div class="ap-meta" id="ap-meta"></div>
+      <div class="ap-actions" id="ap-actions"></div>
+      <div class="ap-targeting" id="ap-targeting" style="display:none">
+        <span id="ap-targeting-text"></span>
+        <button class="btn sm" id="ap-cancel-target">取消</button>
+      </div>
+    </div>
   </div>
   <div class="sidebar" id="side-app" v-cloak>
     <div class="tabs">
@@ -55,6 +90,10 @@
           <span class="cdot" :style="{background: color(m), color: color(m)}"></span>
           <span class="gname">@{{ m.gameUsername || ('key-' + m.keyId) }}</span>
           <span class="dot" :class="m.online ? 'on' : 'off'" :title="m.online ? '在线' : '离线'"></span>
+          <span v-if="m.hosting" class="tag" :class="m.hosting.status === 'RUNNING' ? '' : 'warn'"
+                :title="hostingTitle(m.hosting)">
+            {{ m.hosting.status === 'RUNNING' ? m.hosting.icon : (m.hosting.status === 'DISCONNECTED' ? '◌' : '⚠') }}
+          </span>
           <span style="flex:1"></span>
           <span v-if="m.warnings > 0" class="tag warn">警告×{{ m.warnings }}</span>
           <span v-if="m.userStatus === 'KICKED'" class="tag danger">已踢出</span>

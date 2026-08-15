@@ -41,7 +41,9 @@ class AllianceRosterControllerTest {
 
         User user = mock(User.class);
         when(user.getStatus()).thenReturn(User.Status.ACTIVE);
-        when(sessions.verifyRosterToken("valid-token")).thenReturn(7L);
+        when(sessions.parseRosterToken("valid-token"))
+                .thenReturn(new com.arena.alliance.auth.SessionService.RosterToken(7L, 0));
+        when(user.getRosterTokenVersion()).thenReturn(0);
         when(users.findById(7L)).thenReturn(Optional.of(user));
         AllianceException denied = AllianceException.forbidden("请先上传一个游戏 Key");
         org.mockito.Mockito.doThrow(denied).when(apiKeys).requireUploadedKey(7L);
@@ -67,7 +69,9 @@ class AllianceRosterControllerTest {
 
         User user = mock(User.class);
         when(user.getStatus()).thenReturn(User.Status.ACTIVE);
-        when(sessions.verifyRosterToken("valid-token")).thenReturn(7L);
+        when(sessions.parseRosterToken("valid-token"))
+                .thenReturn(new com.arena.alliance.auth.SessionService.RosterToken(7L, 0));
+        when(user.getRosterTokenVersion()).thenReturn(0);
         when(users.findById(7L)).thenReturn(Optional.of(user));
         GameObject core = new GameObject("CORE", "core-1", true, "alice", new Cell(12, 8),
                 5, 5, "NORMAL", null, null, null);

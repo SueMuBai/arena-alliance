@@ -6,13 +6,10 @@ package com.arena.alliance.game.dto;
 public record Cell(long x, long y) {
 
     public Cell move(String direction) {
-        return switch (direction) {
-            case "UP" -> new Cell(x, y - 1);
-            case "DOWN" -> new Cell(x, y + 1);
-            case "LEFT" -> new Cell(x - 1, y);
-            case "RIGHT" -> new Cell(x + 1, y);
-            default -> this;
-        };
+        long dx = "RIGHT".equals(direction) ? 1 : ("LEFT".equals(direction) ? -1 : 0);
+        long dy = "DOWN".equals(direction) ? 1 : ("UP".equals(direction) ? -1 : 0);
+        if (dx == 0 && dy == 0) return this;
+        return GridMath.offset(this, dx, dy).orElse(this);
     }
 
     @Override

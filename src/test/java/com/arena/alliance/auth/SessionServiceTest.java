@@ -59,11 +59,11 @@ class SessionServiceTest {
 
     @Test
     void rosterTokenRoundTripAndNotInterchangeable() {
-        String rosterToken = sessions.issueRosterToken(7L);
-        assertEquals(7L, sessions.verifyRosterToken(rosterToken));
-        assertNull(sessions.verifyRosterToken(rosterToken + "x"));
+        String rosterToken = sessions.issueRosterToken(7L, 0);
+        assertEquals(7L, sessions.parseRosterToken(rosterToken).userId());
+        assertNull(sessions.parseRosterToken(rosterToken + "x"));
         // roster 令牌不能当会话令牌用，反之亦然
         assertNull(sessions.verify(rosterToken));
-        assertNull(sessions.verifyRosterToken(sessions.issue(7L)));
+        assertNull(sessions.parseRosterToken(sessions.issue(7L)));
     }
 }

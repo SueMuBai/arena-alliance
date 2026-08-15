@@ -6,6 +6,8 @@ import com.arena.alliance.engine.WorldAggregator;
 import com.arena.alliance.game.dto.Cell;
 import com.arena.alliance.game.dto.GameObject;
 import com.arena.alliance.game.dto.PlayerState;
+import com.arena.alliance.hosting.HostingService;
+import com.arena.alliance.hosting.HostingStatus;
 import com.arena.alliance.rules.RuleService;
 import com.arena.alliance.rules.RuleSettings;
 import com.arena.alliance.user.UserService;
@@ -18,6 +20,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -31,8 +34,10 @@ class MapSnapshotServiceTest {
         RuleService rules = mock(RuleService.class);
         UserService users = mock(UserService.class);
         ApiKeyService apiKeys = mock(ApiKeyService.class);
+        HostingService hosting = mock(HostingService.class);
         MapSseService sse = mock(MapSseService.class);
-        MapSnapshotService service = new MapSnapshotService(aggregator, engine, rules, users, apiKeys, sse);
+        MapSnapshotService service = new MapSnapshotService(aggregator, engine, rules, users, apiKeys, hosting, sse);
+        when(hosting.statusOf(anyLong())).thenReturn(HostingStatus.OFF);
 
         GameObject controlledCore = core("core-alice", true, "alice", 12, 8);
         PlayerState state = new PlayerState("ACTIVE", null, 5, 0, null,

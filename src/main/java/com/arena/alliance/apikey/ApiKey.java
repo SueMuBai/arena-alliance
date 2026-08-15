@@ -56,6 +56,14 @@ public class ApiKey {
     @Column(name = "roster_ids_only")
     private Boolean rosterIdsOnly = Boolean.FALSE;
 
+    /** 是否开启联盟托管（联盟指挥官代为操作该账号）；null 兼容旧数据。 */
+    @Column(name = "hosting_enabled")
+    private Boolean hostingEnabled = Boolean.FALSE;
+
+    /** 托管配置 JSON：{mode, 高级覆盖参数…}；null 走默认预设。 */
+    @Column(name = "hosting_config", columnDefinition = "TEXT")
+    private String hostingConfig;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Instant.now();
 
@@ -141,6 +149,22 @@ public class ApiKey {
 
     public void setRosterIdsOnly(boolean rosterIdsOnly) {
         this.rosterIdsOnly = rosterIdsOnly;
+    }
+
+    public boolean isHostingEnabled() {
+        return Boolean.TRUE.equals(hostingEnabled);
+    }
+
+    public void setHostingEnabled(boolean hostingEnabled) {
+        this.hostingEnabled = hostingEnabled;
+    }
+
+    public String getHostingConfig() {
+        return hostingConfig;
+    }
+
+    public void setHostingConfig(String hostingConfig) {
+        this.hostingConfig = hostingConfig;
     }
 
     public Instant getCreatedAt() {

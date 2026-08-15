@@ -40,4 +40,7 @@ public class RuleSettings {
 
     /** 允许账号密码注册（关闭时仅 LinuxDo 登录；用户数为 0 时首个注册不受限） */
     public boolean allowPasswordRegister = false;
+
+    /** 联盟托管总闸（关闭后所有托管账号暂停指挥，成员开关保留） */
+    public boolean hostingAllowed = true;
 }

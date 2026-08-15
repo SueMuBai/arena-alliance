@@ -26,6 +26,14 @@ public enum IncidentType {
     KEY_INVALID,
     /** apikey 与现有游戏账号重复 */
     KEY_DUPLICATE,
+    /** 开启托管 */
+    HOSTING_STARTED,
+    /** 停止托管 */
+    HOSTING_STOPPED,
+    /** 检测到成员自己的 agent 在运行，托管冲突暂停 */
+    HOSTING_PAUSED_CONFLICT,
+    /** 托管恢复 */
+    HOSTING_RESUMED,
     /** 一般信息 */
     INFO
 }

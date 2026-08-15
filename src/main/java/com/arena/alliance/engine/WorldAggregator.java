@@ -7,6 +7,8 @@ import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.BitSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -40,6 +42,9 @@ public class WorldAggregator {
                                  PlayerState state, Instant at) {
     }
 
+    public record CoverageUpdate(ChunkCoord coord, byte[] bytes, long updatedTick) {
+    }
+
     /** 成员对象索引：按格 / 按对象 ID（仅含近 2 tick 内确认的位置） */
     public record MemberIndex(Map<Cell, OwnerRef> byCell, Map<String, OwnerRef> byId) {
 
@@ -51,6 +56,10 @@ public class WorldAggregator {
     private final Map<Cell, Boolean> obstacles = new ConcurrentHashMap<>();
     private final Queue<Cell> pendingObstacles = new ConcurrentLinkedQueue<>();
     private final Map<Cell, Long> resources = new ConcurrentHashMap<>();
+    private final Map<ChunkCoord, BitSet> coverage = new HashMap<>();
+    private final Map<ChunkCoord, Long> coverageTicks = new HashMap<>();
+    private final Set<ChunkCoord> dirtyCoverage = new HashSet<>();
+    private final Queue<ChunkCoord> pendingCoverage = new ConcurrentLinkedQueue<>();
     /**
      * 当前联盟视野中的敌人并集。成员 state 是完整快照；每次状态更新后从 members 现有快照重建，
      * 因此敌人一旦不再被任何成员看见就立即消失，不保留最后目击幻影。
@@ -58,17 +67,22 @@ public class WorldAggregator {
     private final Map<String, EnemySighting> enemies = new ConcurrentHashMap<>();
     private volatile PlayerState.Beacon beacon;
     private final AtomicLong maxTick = new AtomicLong();
+    private volatile Instant tickObservedAt = Instant.now();
     private final AtomicLong version = new AtomicLong();
 
     private volatile MemberIndex cachedIndex = MemberIndex.EMPTY;
     private volatile long cachedIndexVersion = -1;
 
     public synchronized void updateMember(long keyId, long userId, String gameUsername, long tick, PlayerState state) {
-        members.put(keyId, new MemberSnapshot(keyId, userId, gameUsername, tick, state, Instant.now()));
+        Instant observedAt = Instant.now();
+        members.put(keyId, new MemberSnapshot(keyId, userId, gameUsername, tick, state, observedAt));
+        long previousMax = maxTick.get();
         long max = maxTick.updateAndGet(t -> Math.max(t, tick));
+        if (tick > previousMax) tickObservedAt = observedAt;
 
         Set<Cell> visibleResources = new HashSet<>();
         Set<Cell> currentVisibleCells = visibleCells(state);
+        recordCoverage(currentVisibleCells, tick);
         if (state.objects() != null) {
             for (GameObject o : state.objects()) {
                 String kind = o.kind() == null ? "" : o.kind();
@@ -170,7 +184,8 @@ public class WorldAggregator {
             for (long dx = -radius; dx <= radius; dx++) {
                 long remaining = radius - Math.abs(dx);
                 for (long dy = -remaining; dy <= remaining; dy++) {
-                    Cell target = new Cell(origin.x() + dx, origin.y() + dy);
+                    Cell target = com.arena.alliance.game.dto.GridMath.offset(origin, dx, dy).orElse(null);
+                    if (target == null) continue;
                     if (hasLineOfSight(origin, target, visibleObstacles)) {
                         visible.add(target);
                     }
@@ -258,12 +273,66 @@ public class WorldAggregator {
         return out;
     }
 
+    /** 落库失败时恢复待写队列；障碍已进入永久内存索引，不能指望后续 state 再次入队。 */
+    public void requeueObstacles(List<Cell> cells) {
+        if (cells != null) pendingObstacles.addAll(cells);
+    }
+
     /** 启动时从持久层恢复障碍记忆 */
     public void preloadObstacles(Iterable<Cell> cells) {
         for (Cell c : cells) {
             obstacles.put(c, Boolean.TRUE);
         }
         version.incrementAndGet();
+    }
+
+    private void recordCoverage(Set<Cell> visibleCells, long tick) {
+        for (Cell cell : visibleCells) {
+            ChunkCoord coord = ChunkCoord.of(cell);
+            BitSet bits = coverage.computeIfAbsent(coord, ignored -> new BitSet(ChunkCoord.CELL_COUNT));
+            int index = ChunkCoord.localIndex(cell);
+            if (!bits.get(index)) {
+                bits.set(index);
+                coverageTicks.merge(coord, tick, Math::max);
+                if (dirtyCoverage.add(coord)) pendingCoverage.add(coord);
+            }
+        }
+    }
+
+    public synchronized void preloadCoverage(ChunkCoord coord, byte[] bytes, long updatedTick) {
+        if (bytes == null || bytes.length > ChunkCoord.CELL_COUNT / 8) {
+            throw new IllegalArgumentException("位图长度必须不超过 128 字节");
+        }
+        coverage.computeIfAbsent(coord, ignored -> new BitSet(ChunkCoord.CELL_COUNT)).or(BitSet.valueOf(bytes));
+        coverageTicks.merge(coord, updatedTick, Math::max);
+    }
+
+    public synchronized Map<ChunkCoord, BitSet> coverageSnapshot() {
+        Map<ChunkCoord, BitSet> snapshot = new HashMap<>();
+        coverage.forEach((coord, bits) -> snapshot.put(coord, (BitSet) bits.clone()));
+        return Map.copyOf(snapshot);
+    }
+
+    public synchronized List<CoverageUpdate> drainPendingCoverage(int max) {
+        List<CoverageUpdate> out = new ArrayList<>();
+        ChunkCoord coord;
+        while (out.size() < max && (coord = pendingCoverage.poll()) != null) {
+            dirtyCoverage.remove(coord);
+            BitSet bits = coverage.get(coord);
+            if (bits != null) out.add(new CoverageUpdate(coord, fixedBytes(bits),
+                    coverageTicks.getOrDefault(coord, 0L)));
+        }
+        return out;
+    }
+
+    public synchronized void requeueCoverage(List<CoverageUpdate> updates) {
+        for (CoverageUpdate update : updates) {
+            if (dirtyCoverage.add(update.coord())) pendingCoverage.add(update.coord());
+        }
+    }
+
+    private static byte[] fixedBytes(BitSet bits) {
+        return Arrays.copyOf(bits.toByteArray(), ChunkCoord.CELL_COUNT / 8);
     }
 
     public Map<Long, MemberSnapshot> members() {
@@ -288,6 +357,10 @@ public class WorldAggregator {
 
     public long maxTick() {
         return maxTick.get();
+    }
+
+    public Instant tickObservedAt() {
+        return tickObservedAt;
     }
 
     public long version() {

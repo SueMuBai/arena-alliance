@@ -33,6 +33,8 @@
           开放新成员注册</label>
         <label class="check"><input type="checkbox" id="r-allowPasswordRegister">
           允许账号密码注册 <small>关闭时仅 LinuxDo 登录；首个用户注册不受限</small></label>
+        <label class="check"><input type="checkbox" id="r-hostingAllowed">
+          联盟托管总闸 <small>关闭后所有托管账号暂停指挥（成员开关保留）</small></label>
       </div>
       <div>
         <div style="color:var(--dim);font-size:12px;margin-bottom:8px">踢出条件（内部攻击造成伤亡时）</div>
@@ -84,7 +86,7 @@
     renderTopbar('admin', me);
 
     const RULE_BOOLS = ['interventionEnabled', 'externalAlert', 'registrationOpen', 'allowPasswordRegister',
-      'kickOnUnitDeath', 'kickOnCoreDamage', 'kickOnCoreDestroyed', 'warnOnShieldDamage'];
+      'hostingAllowed', 'kickOnUnitDeath', 'kickOnCoreDamage', 'kickOnCoreDestroyed', 'warnOnShieldDamage'];
     const RULE_NUMS = ['maxOverridesPerTick', 'minTrustLevel', 'kickAfterWarnings'];
     const TYPE_LABEL = {
       INTERNAL_ATTACK_BLOCKED: '拦截', INTERNAL_ATTACK_DETECTED: '检测',

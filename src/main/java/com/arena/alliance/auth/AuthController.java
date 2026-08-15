@@ -69,18 +69,20 @@ public class AuthController {
 
     /** 账号密码注册（首个用户注册不受开关限制并成为管理员） */
     @PostMapping("/register")
-    public ApiResponse<Void> register(@RequestBody PasswordAuthRequest body, HttpServletResponse response) {
+    public ApiResponse<Void> register(@RequestBody PasswordAuthRequest body,
+                                     HttpServletRequest request, HttpServletResponse response) {
         boolean allowed = ruleService.rules().allowPasswordRegister && ruleService.rules().registrationOpen;
         User user = userService.registerLocal(body.username(), body.password(), allowed);
-        issueSession(response, user.getId());
+        issueSession(request, response, user.getId());
         return ApiResponse.ok();
     }
 
     /** 账号密码登录 */
     @PostMapping("/login")
-    public ApiResponse<Void> login(@RequestBody PasswordAuthRequest body, HttpServletResponse response) {
+    public ApiResponse<Void> login(@RequestBody PasswordAuthRequest body,
+                                  HttpServletRequest request, HttpServletResponse response) {
         User user = userService.loginLocal(body.username(), body.password());
-        issueSession(response, user.getId());
+        issueSession(request, response, user.getId());
         return ApiResponse.ok();
     }
 
@@ -92,7 +94,8 @@ public class AuthController {
         }
         String state = Long.toHexString(System.nanoTime()) + Long.toHexString(Double.doubleToLongBits(Math.random()));
         ResponseCookie cookie = ResponseCookie.from(STATE_COOKIE, state)
-                .httpOnly(true).path("/").maxAge(Duration.ofMinutes(10)).sameSite("Lax").build();
+                .httpOnly(true).path("/").maxAge(Duration.ofMinutes(10)).sameSite("Lax")
+                .secure(isHttps(request)).build();
         response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
         response.sendRedirect(oauth.buildAuthorizeUrl(redirectUri(request), state));
     }
@@ -119,7 +122,7 @@ public class AuthController {
             }
             User user = userService.loginFromLinuxDo(ldUser.id(), ldUser.username(),
                     ldUser.name(), ldUser.trustLevel(), ruleService.rules().registrationOpen);
-            issueSession(response, user.getId());
+            issueSession(request, response, user.getId());
             response.sendRedirect("/");
         } catch (AllianceException e) {
             redirectError(response, e.getMessage());
@@ -131,12 +134,13 @@ public class AuthController {
 
     /** 本地开发登录（默认关闭；alliance.dev-login-enabled=true 时可用） */
     @GetMapping("/dev-login")
-    public void devLogin(@RequestParam String u, HttpServletResponse response) throws IOException {
+    public void devLogin(@RequestParam String u,
+                         HttpServletRequest request, HttpServletResponse response) throws IOException {
         if (!props.devLoginEnabled()) {
             throw AllianceException.forbidden("开发登录未启用");
         }
         User user = userService.loginFromLinuxDo("dev:" + u, u, u, 99, true);
-        issueSession(response, user.getId());
+        issueSession(request, response, user.getId());
         response.sendRedirect("/");
     }
 
@@ -168,10 +172,18 @@ public class AuthController {
         return ApiResponse.ok();
     }
 
-    private void issueSession(HttpServletResponse response, long userId) {
+    private void issueSession(HttpServletRequest request, HttpServletResponse response, long userId) {
         ResponseCookie cookie = ResponseCookie.from(SessionService.COOKIE_NAME, sessionService.issue(userId))
-                .httpOnly(true).path("/").maxAge(sessionService.ttl()).sameSite("Lax").build();
+                .httpOnly(true).path("/").maxAge(sessionService.ttl()).sameSite("Lax")
+                // HTTPS 下加 Secure：禁止明文回传，抓包拿不到会话
+                .secure(isHttps(request)).build();
         response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
+    }
+
+    /** 兼容反向代理：优先看 X-Forwarded-Proto */
+    static boolean isHttps(HttpServletRequest request) {
+        String forwarded = request.getHeader("X-Forwarded-Proto");
+        return forwarded != null ? "https".equalsIgnoreCase(forwarded) : request.isSecure();
     }
 
     private String redirectUri(HttpServletRequest request) {

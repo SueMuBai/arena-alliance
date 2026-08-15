@@ -10,15 +10,16 @@ import java.util.Map;
  */
 public enum UnitType {
     /** 核心 */
-    CORE(5),
+    CORE(5, 5),
     /** 工人 */
-    WORKER(3),
+    WORKER(3, 2),
     /** 先锋 */
-    VANGUARD(4),
+    VANGUARD(4, 4),
     /** 游侠 */
-    RANGER(5);
+    RANGER(5, 2);
 
     private final int visionRadius;
+    private final int maxHp;
 
     private static final Map<String, UnitType> nameByTypeMap = new HashMap<>();
 
@@ -26,13 +27,19 @@ public enum UnitType {
         Arrays.stream(values()).forEach(type -> nameByTypeMap.put(type.name(), type));
     }
 
-    UnitType(int visionRadius) {
+    UnitType(int visionRadius, int maxHp) {
         this.visionRadius = visionRadius;
+        this.maxHp = maxHp;
     }
 
     /** 曼哈顿视野半径（官方 Map and vision 视野表） */
     public int visionRadius() {
         return visionRadius;
+    }
+
+    /** 满血值（官方 Units 数值表；Core 为 5） */
+    public int maxHp() {
+        return maxHp;
     }
 
     public boolean isCurType(String name) {

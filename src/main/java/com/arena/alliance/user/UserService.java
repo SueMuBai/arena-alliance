@@ -141,4 +141,15 @@ public class UserService {
         user.setWarnings(0);
         repository.save(user);
     }
+
+    /** 重置名册接入令牌：版本自增，此前签发的所有令牌立即失效（令牌泄露时自助吊销） */
+    @Transactional
+    public int rotateRosterToken(long userId) {
+        User user = get(userId);
+        int next = user.getRosterTokenVersion() + 1;
+        user.setRosterTokenVersion(next);
+        repository.save(user);
+        log.info("用户 {} 已重置名册接入令牌（版本 {}）", user.getUsername(), next);
+        return next;
+    }
 }

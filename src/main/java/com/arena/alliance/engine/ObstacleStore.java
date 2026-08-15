@@ -46,7 +46,8 @@ public class ObstacleStore {
         try {
             repository.saveAll(pending.stream().map(c -> new WorldCell(c.x(), c.y())).toList());
         } catch (Exception e) {
-            log.warn("障碍记忆落库失败: {}", e.getMessage());
+            aggregator.requeueObstacles(pending);
+            log.warn("障碍记忆落库失败，已重新入队: {}", e.getMessage());
         }
     }
 }

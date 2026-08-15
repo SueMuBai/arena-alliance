@@ -5,12 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>我的 Key · Arena 联盟</title>
   <link rel="stylesheet" href="/css/app.css">
-  <style>
-    .privacy-options { display: grid; gap: 7px; min-width: 180px; }
-    .privacy-options label { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 12px; cursor: pointer; }
-    .privacy-options input { margin: 0; }
-    [v-cloak] { display: none; }
-  </style>
+  <style>[v-cloak] { display: none; }</style>
 </head>
 <body>
 <div class="topbar" id="topbar"></div>
@@ -30,7 +25,7 @@
   </div>
 
   <div class="card">
-    <h2>我的 Key 列表</h2>
+    <h2>我的 Key 列表 <small>隐私与托管设置在「编辑」中</small></h2>
     <table v-if="keys.length">
       <thead>
       <tr>
@@ -39,9 +34,9 @@
         <th>Key</th>
         <th>状态</th>
         <th>最近 Tick</th>
+        <th>托管</th>
         <th>说明</th>
-        <th>隐私设置</th>
-        <th style="width:180px">操作</th>
+        <th style="width:210px">操作</th>
       </tr>
       </thead>
       <tbody>
@@ -57,20 +52,16 @@
           <span class="status-pill" :class="statusClass(k)">{{ statusText(k) }}</span>
         </td>
         <td style="font-family:var(--mono)">{{ k.lastSeenTick ?? '-' }}</td>
+        <td>
+          <span v-if="k.hostingStatus === 'RUNNING'" class="status-pill on"
+                :title="k.hostingModeLabel">{{ k.hostingModeIcon }} 托管中</span>
+          <span v-else-if="k.hostingStatus === 'PAUSED_CONFLICT'" class="status-pill warn"
+                title="检测到其他 agent 在运行，进入编辑恢复">⚠ 冲突暂停</span>
+          <span v-else class="status-pill">关</span>
+        </td>
         <td style="color:var(--dim);font-size:12px">{{ k.lastError || '' }}</td>
         <td>
-          <div class="privacy-options">
-            <label>
-              <input type="checkbox" :checked="k.showCoreOnMap" :disabled="k.saving"
-                     @change="setPrivacy(k, 'showCoreOnMap', $event.target.checked)">向其他成员显示核心
-            </label>
-            <label>
-              <input type="checkbox" :checked="k.rosterIdsOnly" :disabled="k.saving"
-                     @change="setPrivacy(k, 'rosterIdsOnly', $event.target.checked)">盟友接口仅返回对象 ID
-            </label>
-          </div>
-        </td>
-        <td>
+          <button class="btn sm" @click="openEdit(k)">编辑</button>
           <button v-if="k.status === 'ENABLED'" class="btn sm" @click="toggle(k, 'disable')">停用</button>
           <button v-else class="btn sm" @click="toggle(k, 'enable')">启用</button>
           <button class="btn sm danger" @click="del(k)">删除</button>
@@ -79,6 +70,59 @@
       </tbody>
     </table>
     <div v-else style="color:var(--dim);text-align:center;padding:28px">还没有上传任何 key</div>
+  </div>
+
+  <!-- 编辑抽屉 -->
+  <div v-if="edit" class="drawer-mask" @click.self="edit = null">
+    <div class="drawer">
+      <div class="drawer-head">
+        <h2>编辑 Key
+          <small v-if="edit.gameUsername">@{{ edit.gameUsername }}</small>
+          <small v-else>{{ edit.masked }}</small>
+        </h2>
+        <button class="btn sm" @click="edit = null">✕</button>
+      </div>
+
+      <h3>基本</h3>
+      <label class="field">
+        <span class="lab">备注</span>
+        <input type="text" v-model="edit.label" placeholder="例如：大号 / 小号2" maxlength="60">
+      </label>
+
+      <h3>隐私</h3>
+      <label class="check">
+        <input type="checkbox" v-model="edit.showCoreOnMap">
+        向其他成员的联盟地图显示我的 Core <small>关闭后仅自己可见</small>
+      </label>
+      <label class="check">
+        <input type="checkbox" v-model="edit.rosterIdsOnly">
+        盟友名册接口仅返回对象 ID <small>不发送坐标与单位类型</small>
+      </label>
+
+      <h3>联盟托管 <small style="color:var(--dim);font-weight:400">指挥官从全联盟视角统一指挥该账号；开启前请关闭你本地的 agent</small></h3>
+      <label class="check">
+        <input type="checkbox" v-model="edit.hostingEnabled">
+        交由联盟指挥官托管此账号
+      </label>
+      <div v-if="edit.hostingStatus === 'PAUSED_CONFLICT'" class="conflict-tip">
+        ⚠ 检测到该账号有其他 agent 在提交计划，托管已自动暂停。请确认本地 agent 已关闭后恢复。
+        <button class="btn sm" @click="resumeHosting">恢复托管</button>
+      </div>
+      <div class="mode-cards" :class="{disabled: !edit.hostingEnabled}">
+        <div v-for="m in MODES" :key="m.name"
+             class="mode-card" :class="{selected: edit.mode === m.name}"
+             @click="edit.hostingEnabled && (edit.mode = m.name)">
+          <div class="mc-icon">{{ m.icon }}</div>
+          <div class="mc-name">{{ m.label }}</div>
+          <div class="mc-desc">{{ m.desc }}</div>
+        </div>
+      </div>
+
+      <div class="drawer-foot">
+        <button class="btn" @click="edit = null">取消</button>
+        <button class="btn primary" :disabled="saving" @click="saveEdit">{{ saving ? '保存中…' : '保存' }}</button>
+      </div>
+    </div>
   </div>
 </div>
 <script src="/js/vendor/vue.global.prod.js"></script>
@@ -102,16 +146,29 @@
       ENABLED: ['已启用', 'on'], DISABLED: ['已停用', ''],
       INVALID: ['凭证失效', 'err'], DUPLICATE: ['重复账号', 'warn']
     };
+    const MODES = [
+      { name: 'CLEAR', icon: '⚔', label: '我为联盟扫清障碍', desc: '优先接清野与打击任务，反击积极' },
+      { name: 'TURTLE', icon: '🛡', label: '别浪，等我发育起来', desc: '只接经济留守任务，稳字当头' },
+      { name: 'SCOUT', icon: '🔭', label: '我愿为联盟探明一切', desc: '优先侦察扩图，为联盟共享视野' },
+      { name: 'BALANCED', icon: '⚖', label: '稳健运营', desc: '默认策略，采集防御均衡发展' }
+    ];
 
     Vue.createApp({
       setup() {
         const keys = Vue.ref([]);
         const form = Vue.reactive({ token: '', label: '' });
         const adding = Vue.ref(false);
+        const edit = Vue.ref(null);
+        const saving = Vue.ref(false);
 
         async function refresh() {
           try {
             keys.value = await api('/api/keys');
+            // 抽屉打开时同步最新托管状态（如冲突暂停解除）
+            if (edit.value) {
+              const fresh = keys.value.find(k => k.id === edit.value.id);
+              if (fresh) edit.value.hostingStatus = fresh.hostingStatus;
+            }
           } catch (e) { }
         }
 
@@ -156,30 +213,61 @@
           }
         }
 
-        async function setPrivacy(k, field, value) {
-          k.saving = true;
-          const payload = {
-            showCoreOnMap: k.showCoreOnMap,
-            rosterIdsOnly: k.rosterIdsOnly,
-            [field]: value
+        function openEdit(k) {
+          edit.value = {
+            id: k.id,
+            gameUsername: k.gameUsername,
+            masked: k.masked,
+            label: k.label || '',
+            showCoreOnMap: !!k.showCoreOnMap,
+            rosterIdsOnly: !!k.rosterIdsOnly,
+            hostingEnabled: !!k.hostingEnabled,
+            hostingStatus: k.hostingStatus,
+            mode: k.hostingMode || 'BALANCED'
           };
+        }
+
+        async function saveEdit() {
+          const e = edit.value;
+          saving.value = true;
           try {
-            await api('/api/keys/' + k.id + '/privacy', {
-              method: 'POST', body: JSON.stringify(payload)
+            await api('/api/keys/' + e.id + '/settings', {
+              method: 'PUT',
+              body: JSON.stringify({
+                label: e.label.trim(),
+                showCoreOnMap: e.showCoreOnMap,
+                rosterIdsOnly: e.rosterIdsOnly,
+                hostingEnabled: e.hostingEnabled,
+                hostingConfig: { mode: e.mode }
+              })
             });
-            toast('隐私设置已更新');
+            toast('已保存');
+            edit.value = null;
+            await refresh();
+          } catch (err) {
+            toast(err.message, true);
+          } finally {
+            saving.value = false;
+          }
+        }
+
+        async function resumeHosting() {
+          try {
+            await api('/api/keys/' + edit.value.id + '/hosting/resume', { method: 'POST' });
+            toast('托管已恢复');
+            edit.value.hostingStatus = 'RUNNING';
+            await refresh();
           } catch (e) {
             toast(e.message, true);
           }
-          await refresh();
         }
 
         refresh();
         setInterval(refresh, 8000);
 
         return {
-          keys, form, adding,
-          addKey, toggle, del, setPrivacy,
+          keys, form, adding, edit, saving, MODES,
+          addKey, toggle, del, openEdit, saveEdit, resumeHosting,
           statusText: k => (STATUS_MAP[k.status] || [k.status])[0],
           statusClass: k => (STATUS_MAP[k.status] || ['', ''])[1]
         };

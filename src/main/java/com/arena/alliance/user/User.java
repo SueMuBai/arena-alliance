@@ -39,6 +39,13 @@ public class User {
     @Column(name = "password_hash", length = 128)
     private String passwordHash;
 
+    /**
+     * 名册接入令牌版本：自增即可让此前签发的所有令牌立刻失效（泄露后可自助吊销）。
+     * null 兼容旧数据，按 0 处理。
+     */
+    @Column(name = "roster_token_version")
+    private Integer rosterTokenVersion = 0;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 16)
     private Role role = Role.MEMBER;
@@ -98,6 +105,14 @@ public class User {
 
     public void setPasswordHash(String passwordHash) {
         this.passwordHash = passwordHash;
+    }
+
+    public int getRosterTokenVersion() {
+        return rosterTokenVersion == null ? 0 : rosterTokenVersion;
+    }
+
+    public void setRosterTokenVersion(int rosterTokenVersion) {
+        this.rosterTokenVersion = rosterTokenVersion;
     }
 
     public Role getRole() {

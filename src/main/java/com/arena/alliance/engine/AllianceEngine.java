@@ -4,12 +4,17 @@ import com.arena.alliance.apikey.ApiKey;
 import com.arena.alliance.apikey.ApiKeyService;
 import com.arena.alliance.config.AllianceProperties;
 import com.arena.alliance.game.GameCommandClient;
+import com.arena.alliance.game.dto.PlanReceipt;
+import com.arena.alliance.game.dto.PlayerState;
+import com.arena.alliance.hosting.CommanderScheduler;
+import com.arena.alliance.hosting.HostingService;
 import com.arena.alliance.incident.IncidentService;
 import com.arena.alliance.incident.IncidentType;
 import com.arena.alliance.rules.RuleSettings;
 import com.arena.alliance.rules.RuleService;
 import com.arena.alliance.user.User;
 import com.arena.alliance.user.UserService;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,6 +51,8 @@ public class AllianceEngine implements MemberSession.Context {
     private final RuleService ruleService;
     private final ApiKeyService apiKeyService;
     private final UserService userService;
+    private final HostingService hostingService;
+    private final CommanderScheduler commanderScheduler;
 
     private final Map<Long, MemberSession> sessions = new ConcurrentHashMap<>();
     private final Map<Long, OnlineMark> online = new ConcurrentHashMap<>();
@@ -53,7 +60,8 @@ public class AllianceEngine implements MemberSession.Context {
 
     public AllianceEngine(AllianceProperties props, HttpClient baseHttpClient, WorldAggregator aggregator,
                           GameCommandClient commandClient, CasualtyJudge judge, IncidentService incidents,
-                          RuleService ruleService, ApiKeyService apiKeyService, UserService userService) {
+                          RuleService ruleService, ApiKeyService apiKeyService, UserService userService,
+                          HostingService hostingService, CommanderScheduler commanderScheduler) {
         this.props = props;
         this.baseHttpClient = baseHttpClient;
         this.aggregator = aggregator;
@@ -63,6 +71,8 @@ public class AllianceEngine implements MemberSession.Context {
         this.ruleService = ruleService;
         this.apiKeyService = apiKeyService;
         this.userService = userService;
+        this.hostingService = hostingService;
+        this.commanderScheduler = commanderScheduler;
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -127,6 +137,7 @@ public class AllianceEngine implements MemberSession.Context {
         MemberSession session = new MemberSession(key.getId(), key.getUserId(), key.getGameUsername(),
                 token, baseHttpClient, props.game().wsUrl(), this);
         sessions.put(key.getId(), session);
+        hostingService.register(key, token);
         session.start();
         log.info("会话已启动: key={} user={}", key.getId(), key.getUserId());
     }
@@ -137,6 +148,8 @@ public class AllianceEngine implements MemberSession.Context {
             session.stop();
             aggregator.removeMember(keyId);
             online.remove(keyId);
+            hostingService.unregister(keyId);
+            commanderScheduler.removeAccount(keyId);
         }
     }
 
@@ -187,6 +200,8 @@ public class AllianceEngine implements MemberSession.Context {
         if (!ok) {
             incidents.record(IncidentType.KEY_DUPLICATE, aggregator.maxTick(), null, null, null, null,
                     "key-" + keyId + " 与已启用 key 同属游戏账号 " + gameUsername + "，已停用");
+        } else {
+            hostingService.updateGameUsername(keyId, gameUsername);
         }
         return ok;
     }
@@ -217,5 +232,38 @@ public class AllianceEngine implements MemberSession.Context {
     @Override
     public void requestStop(long keyId) {
         stopSession(keyId);
+    }
+
+    @Override
+    public void hostingConnected(long keyId) {
+        hostingService.onConnected(keyId);
+        commanderScheduler.eligibilityChanged();
+    }
+
+    @Override
+    public void hostingDisconnected(long keyId) {
+        hostingService.onDisconnected(keyId);
+        commanderScheduler.eligibilityChanged();
+    }
+
+    @Override
+    public void hostingReportState(long keyId, long userId, String gameUsername, long tick, PlayerState state) {
+        hostingService.onState(keyId, tick);
+        commanderScheduler.reportState(keyId, userId, gameUsername, tick, state);
+    }
+
+    @Override
+    public void hostingOnReceipt(long keyId, PlanReceipt receipt) {
+        hostingService.onReceipt(keyId, receipt);
+    }
+
+    @Override
+    public void hostingRegisterPlatformPlan(long keyId, ObjectNode plan) {
+        hostingService.registerPlatformPlan(keyId, plan);
+    }
+
+    @Override
+    public void hostingUnregisterPlatformPlan(long keyId, ObjectNode plan) {
+        hostingService.unregisterPlatformPlan(keyId, plan);
     }
 }

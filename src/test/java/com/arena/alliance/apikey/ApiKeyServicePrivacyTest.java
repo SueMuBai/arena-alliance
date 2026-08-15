@@ -71,4 +71,28 @@ class ApiKeyServicePrivacyTest {
 
         assertEquals(403, denied.getStatus());
     }
+
+    @Test
+    void keyLabelUsesCodePointLimitAndRejectsWhitespaceInsideToken() {
+        ApiKeyRepository repository = mock(ApiKeyRepository.class);
+        CryptoService crypto = mock(CryptoService.class);
+        ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
+        ApiKeyService service = new ApiKeyService(repository, crypto, publisher);
+        when(crypto.sha256Hex("abcdefgh")).thenReturn("hash");
+        when(crypto.encrypt("abcdefgh")).thenReturn("cipher");
+        when(repository.findByTokenHash("hash")).thenReturn(Optional.empty());
+        ApiKey key = mock(ApiKey.class);
+        when(key.getUserId()).thenReturn(7L);
+        when(repository.findById(11L)).thenReturn(Optional.of(key));
+
+        String sixtyEmoji = "😀".repeat(60);
+        service.updateSettings(7, 11, sixtyEmoji, true, false, false, null);
+        verify(key).setLabel(sixtyEmoji);
+
+        AllianceException tooLong = assertThrows(AllianceException.class,
+                () -> service.updateSettings(7, 11, "😀".repeat(61), true, false, false, null));
+        assertEquals(400, tooLong.getStatus());
+        assertThrows(AllianceException.class,
+                () -> service.addKey(7, "abcd\tefgh", "label"));
+    }
 }

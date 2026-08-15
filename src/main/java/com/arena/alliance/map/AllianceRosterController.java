@@ -56,13 +56,18 @@ public class AllianceRosterController {
         if (raw == null && authorization != null && authorization.startsWith("Bearer ")) {
             raw = authorization.substring(7);
         }
-        Long userId = sessionService.verifyRosterToken(raw);
-        if (userId == null) {
+        SessionService.RosterToken parsed = sessionService.parseRosterToken(raw);
+        if (parsed == null) {
             throw AllianceException.unauthorized("无效的接入令牌");
         }
+        long userId = parsed.userId();
         User user = userRepository.findById(userId).orElse(null);
         if (user == null || user.getStatus() != User.Status.ACTIVE) {
             throw AllianceException.forbidden("成员资格已失效");
+        }
+        // 版本不符 = 该令牌已被本人重置吊销（泄露后可自助失效）
+        if (parsed.version() != user.getRosterTokenVersion()) {
+            throw AllianceException.unauthorized("接入令牌已失效，请到「联盟规则」页重新获取");
         }
         apiKeyService.requireUploadedKey(userId);
 

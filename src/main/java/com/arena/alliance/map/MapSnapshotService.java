@@ -7,6 +7,9 @@ import com.arena.alliance.engine.WorldAggregator;
 import com.arena.alliance.game.dto.Cell;
 import com.arena.alliance.game.dto.GameObject;
 import com.arena.alliance.game.dto.PlayerState;
+import com.arena.alliance.hosting.HostingConfig;
+import com.arena.alliance.hosting.HostingService;
+import com.arena.alliance.hosting.HostingStatus;
 import com.arena.alliance.rules.RuleService;
 import com.arena.alliance.user.User;
 import com.arena.alliance.user.UserService;
@@ -16,6 +19,7 @@ import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
 
 import java.time.Instant;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -30,22 +34,28 @@ import java.util.Set;
 @Service
 public class MapSnapshotService {
 
+    private static final long COMMAND_WINDOW_MS = 15_000;
+    private static final long COUNTDOWN_SAFETY_MS = 500;
+
     private final WorldAggregator aggregator;
     private final AllianceEngine engine;
     private final RuleService ruleService;
     private final UserService userService;
     private final ApiKeyService apiKeyService;
+    private final HostingService hostingService;
     private final MapSseService sse;
 
     private volatile long lastPushedVersion = -1;
 
     public MapSnapshotService(WorldAggregator aggregator, AllianceEngine engine, RuleService ruleService,
-                              UserService userService, ApiKeyService apiKeyService, MapSseService sse) {
+                              UserService userService, ApiKeyService apiKeyService,
+                              HostingService hostingService, MapSseService sse) {
         this.aggregator = aggregator;
         this.engine = engine;
         this.ruleService = ruleService;
         this.userService = userService;
         this.apiKeyService = apiKeyService;
+        this.hostingService = hostingService;
         this.sse = sse;
     }
 
@@ -78,6 +88,12 @@ public class MapSnapshotService {
     private Map<String, Object> build(Long viewerUserId) {
         Map<String, Object> snapshot = new LinkedHashMap<>();
         snapshot.put("tick", aggregator.maxTick());
+        Instant observedAt = aggregator.tickObservedAt();
+        long elapsed = observedAt == null ? COMMAND_WINDOW_MS
+                : Math.max(0, Duration.between(observedAt, Instant.now()).toMillis());
+        snapshot.put("commandWindowMs", COMMAND_WINDOW_MS);
+        snapshot.put("tickRemainingMs", Math.max(0, COMMAND_WINDOW_MS - COUNTDOWN_SAFETY_MS - elapsed));
+        snapshot.put("tickEstimated", true);
         snapshot.put("allianceName", ruleService.rules().allianceName);
         snapshot.put("updatedAt", Instant.now().toString());
 
@@ -106,6 +122,15 @@ public class MapSnapshotService {
             mm.put("warnings", owner == null ? 0 : owner.getWarnings());
             mm.put("online", engine.isKeyOnline(m.keyId()));
             mm.put("tick", m.tick());
+            HostingStatus hostingStatus = hostingService.statusOf(m.keyId());
+            if (hostingStatus != HostingStatus.OFF) {
+                HostingConfig hostingConfig = hostingService.configOf(m.keyId());
+                Map<String, Object> hm = new LinkedHashMap<>();
+                hm.put("status", hostingStatus.name());
+                hm.put("mode", hostingConfig.mode().name());
+                hm.put("icon", hostingConfig.mode().icon());
+                mm.put("hosting", hm);
+            }
             PlayerState state = m.state();
             mm.put("status", state.status());
             mm.put("population", state.population());

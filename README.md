@@ -12,6 +12,8 @@
 - 🛡 **内部攻击实时拦截**：游戏机制中同一玩家后提交的 AGENT 计划会覆盖先前计划，且计划回执会广播给该玩家的所有连接。平台监听每个成员的作战计划，一旦发现攻击联盟成员的动作（SWEEP/SHOOT 落在成员对象上），立即**用攻击者本人的 key 提交"净化计划"**覆盖——只把攻击动作改为 WAIT，采集/移动等正常动作原样保留
 - ⚖ **伤亡裁决与自动执法**：网页手操（MANUAL）优先级高于 AGENT 无法拦截。若内部攻击仍造成伤亡，平台通过攻守双方事件交叉归因（`destroyed_by` 用户名 / `SHOT_HIT` target / `SWEEP` 格位），按规则**自动踢出攻击者**（默认：死单位或伤 Core 即踢；仅掉护盾记警告，累计可踢）
 - 🔥 **外部攻击告警**：外部玩家攻击成员时（无对方 key、无法拦截），地图打脉冲标记 + 事件流告警
+- 🤖 **联盟托管（指挥官）**：成员可把账号交给"联盟指挥官"托管——**从全联盟视角统一指挥**（态势评估 → 联盟目标 → 跨账号任务分派 → 单账号执行）：资源分片不互抢、自动生产治疗；威胁分级响应（远处静止不动员／移动警戒／进圈预撤／接战反击）、Worker 遇敌回撤、Core 预撤迁移；**成员遇袭时邻近托管账号自动驰援**（含保护未托管的成员）；**侦察扇区分工**（按联盟共享记忆统计未探明 chunk，跨账号互不重叠地扩图）；**清野战役**（重复观测确认长期静止的目标后，跨账号编组集火，48/56 格出击与释放约束、留守底线）。可选角色模式：⚔ 我为联盟扫清障碍 / 🛡 别浪等我发育 / 🔭 我愿为联盟探明一切 / ⚖ 稳健运营。检测到成员本地 agent 提交计划会**自动冲突暂停**；托管计划提交前强制过盟友安全闸
+- 🎮 **人工接管**：托管运行中可在地图底部开启手动操控（多账号时只能操作自己已托管的账号）。点击自己的核心/单位后，操作面板会**贴近该对象**显示；移动以青色目标格/路径反馈，扫击与射击以红色范围、弹道和命中效果反馈，Core 生产使用独立三列按钮；顶部同时显示约 15 秒 Tick 指令窗口倒计时。核心迁移按官方 4-Tick 语义处理（迁移期间只能继续/取消/自毁，且无法生产、治疗、接收上缴）。**手动操作的单位以用户指令为准，未手动的单位继续由指挥官接管**；任何违反联盟规则的指令会被直接拒绝并提示原因
 - 🔑 **LinuxDo 登录 + 账号密码**：`connect.linux.do` OAuth2（实现参考 new-api），也支持本地账号密码注册/登录（管理员开关控制，默认关）。**第一个登录/注册的用户自动成为管理员**，可在后台配置全部明细规则；一个账号可上传多个 apikey（多个游戏账号）
 
 ## 快速开始
@@ -75,6 +77,16 @@ java -jar target/arena-alliance.jar
 | LinuxDo 最低信任等级 | 0 |
 | 开放注册 | 开 |
 | 允许账号密码注册（首个用户注册不受限） | 关 |
+| 联盟托管总闸（关闭后所有托管账号暂停指挥，成员开关保留） | 开 |
+
+### 成员自己的开关（「我的 Key」→ 编辑）
+
+| 设置 | 默认 | 说明 |
+|---|---|---|
+| 向其他成员显示我的核心 | 开 | 关闭后地图上仅自己可见自己的 Core |
+| 盟友名册仅返回对象 ID | 关 | 开启后不对外发送坐标与单位类型 |
+| 联盟托管 | 关 | 开启后由指挥官统一指挥该账号 |
+| 托管模式 | ⚖ 稳健运营 | ⚔ 扫清障碍 / 🛡 别浪发育 / 🔭 探明一切 / ⚖ 稳健运营 |
 
 ## 配置项
 
@@ -111,27 +123,76 @@ java -jar target/arena-alliance.jar
 - 覆盖与攻击者 agent 的重新提交是**同槽位竞速**，每 Tick 每槽位最多 64 次提交、4 并发，平台默认最多覆盖 8 次/Tick 防止打满配额
 - 视野拼合以各成员自身对象为准（永远全量），敌方对象仅在可见时出现并按目击时效淡出
 
+## 安全说明
+
+| 风险 | 防护 |
+|---|---|
+| 伪造请求（不知道服务端密钥） | 会话与名册令牌都是 HMAC 签名，改一个字节即失效 |
+| 跨站请求伪造（CSRF） | Cookie `SameSite=Lax` + 状态变更一律用 POST/PUT |
+| XSS 窃取会话 | Cookie `HttpOnly`，JS 读不到 |
+| **抓包窃取会话** | HTTPS 下自动加 `Secure`（识别 `X-Forwarded-Proto`），禁止明文回传；**生产务必启用 HTTPS** |
+| **重放抓到的人工指令** | 指令带 `expectedTick`，世界推进后旧包直接 409 失效 |
+| 篡改前端绕过校验 | 服务端基于最新 state 重算可用动作与目标格，不信任前端提交的 enabled/targets |
+| 越权操作他人账号 | 每个敏感接口都校验对象归属（key/账号/单位必须属于本人） |
+| 攻击盟友 | 人工指令与托管计划都过同一套 `ThreatMonitor` 红线复核 |
+| 会话被盗后高频滥用 | 人工指令限流（15 秒 30 次/用户） |
+| 名册令牌泄露 | 令牌带版本号，「重置令牌」后旧令牌立即全部失效 |
+
+> ⚠️ 公网部署请务必用 HTTPS（反代终止 TLS 时透传 `X-Forwarded-Proto`），否则会话 Cookie 可被中间人抓取复用。
+
 ## 架构
 
 ```
 com.arena.alliance
 ├── config/     AllianceProperties · NettyConfig(共享 EventLoop/连接池) · WebConfig
 ├── common/     CryptoService(AES-GCM/HMAC) · ApiResponse · 全局异常
-├── game/       纯协议层：DTO · GameJson · GameWsClient(重连退避) · GameCommandClient
-├── engine/     WorldAggregator · ThreatMonitor · PlanSanitizer · MemberSession
-│               CasualtyJudge(伤亡法庭) · Enforcer(执法) · AllianceEngine(编排)
-├── auth/       LinuxDo OAuth · HMAC 会话 · 拦截器（首个用户→管理员）
-├── user/ apikey/ rules/ incident/   领域层（JPA + PostgreSQL）
-├── map/        快照组装 · SSE 推送
+├── game/       纯协议层：DTO(UnitType 含视野/血量) · GameJson
+│               GameWsClient(重连退避) · GameCommandClient
+├── engine/     WorldAggregator(全联盟视野聚合·supercover 视线) · ThreatMonitor
+│               PlanSanitizer · MemberSession · CasualtyJudge(伤亡法庭)
+│               Enforcer(执法) · AllianceEngine(会话编排)
+├── hosting/    联盟托管（指挥官）
+│   ├── HostingService        开关/冲突暂停/指纹池/受托提交/人工指令覆盖
+│   ├── CommanderScheduler    Tick 对齐屏障 + 单线程指挥循环
+│   ├── AllianceBlackboard    黑板：账号快照 + 租约/侦察/观测/打击台账
+│   ├── ManualControl·ManualTargeting  人工接管：协议校验 · 目标格与红线标记
+│   ├── HostingController     托管与人工接管 API
+│   └── plan/                 纯函数指挥内核（可录快照回放）
+│       ├── CommanderPlanner  管线编排：威胁→驰援→清野→经济→侦察→编译→安全闸
+│       ├── ThreatAssessor    四级威胁状态机   · DefensePlanner  守位/反击/预撤
+│       ├── ScoutDoctrine     探索扇区分工     · ClearDoctrine   静止目标集火
+│       ├── ProductionPlanner 阵容阶段与动态价格 · Pathfinder     共享记忆 BFS
+│       └── AllySafetyGate    盟友红线终检（复用 ThreatMonitor）
+├── auth/       LinuxDo OAuth · 账号密码 · HMAC 会话 · 拦截器（首个用户→管理员）
+├── user/ apikey/ rules/ incident/   领域层（JPA：SQLite / PostgreSQL）
+├── map/        快照组装(按查看者隐私过滤) · SSE 推送 · 盟友名册接口
 └── admin/      规则/成员/审计管理 API
-前端：原生 JS + Canvas（深色战场风格，无构建步骤），页面 / · /login.html · /keys.html · /admin.html
+
+前端：Vue 3（CDN 本地化，无构建步骤）+ Canvas 战场渲染 + 霓虹玻璃拟态设计系统
+     页面 / (联盟地图·人工接管) · /login.html · /keys.html(编辑抽屉) · /rules.html · /admin.html
 ```
+
+**扩展点**：新玩法 = 加一个 Doctrine 并接入 `CommanderPlanner` 管线；新微操 = 加一个规划器方法；
+新托管风格 = `PilotMode` 加一个枚举值 + `HostingConfig.of` 一行预设。黑板、调度、提交链路都不用改。
 
 ## 测试
 
 ```bash
-mvn test          # 引擎纯函数单测 + FakeArenaServer 端到端（模拟内部攻击→拦截→伤亡→踢出全流程，H2 内存库，无需 PG）
+mvn test     # 105 个用例：纯函数单测 + FakeArenaServer 端到端（H2 内存库，无需 PG/外网）
 ```
+
+覆盖范围：
+
+| 领域 | 关键用例 |
+|---|---|
+| 视野聚合 | 敌人离开视野即消失、资源重入视野发现消失才删除、障碍遮挡不误删 |
+| 保护体系 | 攻击识别（扫击/射击几何）、净化计划只改攻击动作、伤亡归因、执法规则 |
+| 指挥内核 | 资源跨账号不互抢、租约防抖、生产阶段与动态价格档、治疗预算 |
+| 防御条令 | 威胁四级矩阵（静止不动员/移动警戒/逼近预撤/接战）、守位、Core 预撤择向、跨账号驰援 |
+| 侦察条令 | chunk 覆盖度、扇区互斥、编制配额、负坐标分块正确性 |
+| 清野战役 | 静止确认与移动清零、集火上限、48/56 距离约束、留守底线、模式限制 |
+| 人工接管 | 协议动作校验、Core 4-Tick 迁移语义、目标格计算与障碍遮挡、盟友红线 |
+| 端到端 | 内部攻击→拦截→伤亡→踢出；双托管账号协同采集 + 冲突暂停隔离 |
 
 ## 常见问题
 

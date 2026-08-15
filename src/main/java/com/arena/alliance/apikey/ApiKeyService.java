@@ -17,6 +17,8 @@ import java.util.Map;
 @Service
 public class ApiKeyService {
 
+    private static final int MAX_LABEL_LENGTH = 60;
+
     public record PrivacySettings(boolean showCoreOnMap, boolean rosterIdsOnly) {
         public static final PrivacySettings DEFAULT = new PrivacySettings(true, false);
     }
@@ -35,8 +37,8 @@ public class ApiKeyService {
 
     @Transactional
     public ApiKey addKey(long userId, String token, String label) {
-        String trimmed = token == null ? "" : token.trim();
-        if (trimmed.length() < 8 || trimmed.contains(" ") || trimmed.contains("\n")) {
+        String trimmed = token == null ? "" : token.strip();
+        if (trimmed.length() < 8 || trimmed.codePoints().anyMatch(Character::isWhitespace)) {
             throw AllianceException.badRequest("apikey 格式不正确");
         }
         String hash = crypto.sha256Hex(trimmed);
@@ -45,7 +47,7 @@ public class ApiKeyService {
         }
         ApiKey key = new ApiKey();
         key.setUserId(userId);
-        key.setLabel(label == null || label.isBlank() ? null : label.trim());
+        key.setLabel(normalizeLabel(label));
         key.setTokenCipher(crypto.encrypt(trimmed));
         key.setTokenHash(hash);
         key.setStatus(ApiKey.Status.ENABLED);
@@ -90,6 +92,25 @@ public class ApiKeyService {
         }
         key.setShowCoreOnMap(showCoreOnMap);
         key.setRosterIdsOnly(rosterIdsOnly);
+        repository.save(key);
+        publisher.publishEvent(new EngineEvents.KeyPrivacyChanged(keyId));
+        return key;
+    }
+
+    /** 编辑页统一保存：备注 + 隐私 + 托管开关/配置 */
+    @Transactional
+    public ApiKey updateSettings(long requesterId, long keyId, String label,
+                                 boolean showCoreOnMap, boolean rosterIdsOnly,
+                                 boolean hostingEnabled, String hostingConfigJson) {
+        ApiKey key = find(keyId);
+        if (!key.getUserId().equals(requesterId)) {
+            throw AllianceException.forbidden("无权修改他人的 key 设置");
+        }
+        key.setLabel(normalizeLabel(label));
+        key.setShowCoreOnMap(showCoreOnMap);
+        key.setRosterIdsOnly(rosterIdsOnly);
+        key.setHostingEnabled(hostingEnabled);
+        key.setHostingConfig(hostingConfigJson);
         repository.save(key);
         publisher.publishEvent(new EngineEvents.KeyPrivacyChanged(keyId));
         return key;
@@ -151,6 +172,15 @@ public class ApiKeyService {
 
     public List<ApiKey> listByUser(long userId) {
         return repository.findByUserIdOrderByIdAsc(userId);
+    }
+
+    private static String normalizeLabel(String label) {
+        if (label == null || label.isBlank()) return null;
+        String normalized = label.strip();
+        if (normalized.codePointCount(0, normalized.length()) > MAX_LABEL_LENGTH) {
+            throw AllianceException.badRequest("备注最多 60 个字符");
+        }
+        return normalized;
     }
 
     /** 批量读取地图/名册隐私配置，避免快照组装时逐 key 查询。 */

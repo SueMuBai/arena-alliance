@@ -59,6 +59,24 @@ public class MemberSession implements GameWsClient.Listener {
 
         /** 请求引擎停掉本会话（如重复 key） */
         void requestStop(long keyId);
+
+        // ---- 联盟托管（指挥官）钩子 ----
+
+        void hostingConnected(long keyId);
+
+        void hostingDisconnected(long keyId);
+
+        /** 每份完整 state 上报给指挥调度器（托管未开启时为空操作） */
+        void hostingReportState(long keyId, long userId, String gameUsername, long tick, PlayerState state);
+
+        /** 所有回执转交托管：外部 AGENT 计划 → 冲突暂停；MANUAL → 本 Tick 让路 */
+        void hostingOnReceipt(long keyId, PlanReceipt receipt);
+
+        /** 平台自己的提交（含反制覆盖）登记指纹，避免回显被误判为冲突 */
+        void hostingRegisterPlatformPlan(long keyId, ObjectNode plan);
+
+        /** 平台提交被明确拒绝时撤销待回显指纹 */
+        void hostingUnregisterPlatformPlan(long keyId, ObjectNode plan);
     }
 
     private final long keyId;
@@ -127,7 +145,10 @@ public class MemberSession implements GameWsClient.Listener {
 
     @Override
     public void onOpen() {
-        dispatch(() -> log.info("[key-{}] WS 已连接", keyId));
+        dispatch(() -> {
+            ctx.hostingConnected(keyId);
+            log.info("[key-{}] WS 已连接，等待新 state", keyId);
+        });
     }
 
     @Override
@@ -138,6 +159,7 @@ public class MemberSession implements GameWsClient.Listener {
     @Override
     public void onDisconnected(Integer closeCode, String detail, boolean fatal) {
         dispatch(() -> {
+            ctx.hostingDisconnected(keyId);
             if (fatal) {
                 log.warn("[key-{}] 凭证失效: code={} {}", keyId, closeCode, detail);
                 ctx.onKeyInvalid(keyId, "close=" + closeCode + " " + detail);
@@ -196,12 +218,14 @@ public class MemberSession implements GameWsClient.Listener {
             ctx.judge().submit(userId, displayName(), state.events());
         }
         ctx.onKeyOnline(keyId, currentTick);
+        ctx.hostingReportState(keyId, userId, gameUsername, currentTick, state);
     }
 
     private void handleReceipt(PlanReceipt receipt) {
         if (receipt == null || receipt.plan() == null) {
             return;
         }
+        ctx.hostingOnReceipt(keyId, receipt);
         List<ThreatMonitor.Offense> offenses = ThreatMonitor.inspect(
                 userId, receipt.plan(), unitPositions, ctx.aggregator().memberIndex());
         if (offenses.isEmpty()) {
@@ -245,6 +269,7 @@ public class MemberSession implements GameWsClient.Listener {
         ObjectNode sanitized = PlanSanitizer.sanitize(receipt.plan(),
                 offenses.stream().map(ThreatMonitor.Offense::unitId).toList());
         String idem = "alc-" + keyId + "-" + receipt.tick() + "-" + idemSeq.incrementAndGet();
+        ctx.hostingRegisterPlatformPlan(keyId, sanitized);
 
         ctx.commands().submitPlan(token, sanitized.toString(), idem).whenComplete((result, error) -> dispatch(() -> {
             if (error != null) {
@@ -258,6 +283,7 @@ public class MemberSession implements GameWsClient.Listener {
                             userId, displayName(), victimUserId, victimName, detail);
                 }
             } else {
+                ctx.hostingUnregisterPlatformPlan(keyId, sanitized);
                 log.warn("[key-{}] 反制提交被拒 status={} body={}", keyId, result.status(), result.body());
             }
         }));

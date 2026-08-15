@@ -5,7 +5,9 @@ async function api(path, opts = {}) {
   try {
     res = await fetch(path, options);
   } catch (e) {
-    throw new Error('网络错误');
+    const error = new Error('网络错误');
+    error.status = 0;
+    throw error;
   }
   if (res.status === 401) {
     location.href = '/login.html';
@@ -15,10 +17,15 @@ async function api(path, opts = {}) {
   try {
     body = await res.json();
   } catch (e) {
-    throw new Error('响应格式异常');
+    const error = new Error('响应格式异常');
+    error.status = res.status;
+    throw error;
   }
   if (!body.success) {
-    throw new Error(body.message || ('请求失败(' + res.status + ')'));
+    const error = new Error(body.message || ('请求失败(' + res.status + ')'));
+    error.status = res.status;
+    error.data = body.data;
+    throw error;
   }
   return body.data;
 }

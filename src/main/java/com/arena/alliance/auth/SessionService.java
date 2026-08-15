@@ -68,18 +68,23 @@ public class SessionService {
         }
     }
 
+    /** 令牌载荷：userId + 版本号（版本号自增即可吊销此前签发的全部令牌） */
+    public record RosterToken(long userId, int version) {
+    }
+
     /**
-     * 成员 agent 的机读接入令牌（长期有效，无状态 HMAC 派生）：
+     * 成员 agent 的机读接入令牌（无状态 HMAC 派生，带版本号）：
      * 用于 /api/alliance/roster 盟友名册接口。
+     * 令牌泄露时，成员自助"重置令牌"会让旧令牌立即失效。
      */
-    public String issueRosterToken(long userId) {
+    public String issueRosterToken(long userId, int version) {
         String payload = Base64.getUrlEncoder().withoutPadding()
-                .encodeToString(("roster:" + userId).getBytes(StandardCharsets.UTF_8));
+                .encodeToString(("roster:" + userId + ":" + version).getBytes(StandardCharsets.UTF_8));
         return payload + "." + crypto.hmacBase64Url(payload);
     }
 
-    /** @return 有效则返回 userId，否则 null */
-    public Long verifyRosterToken(String token) {
+    /** @return 签名有效则返回载荷（userId + 版本号），否则 null；版本号需由调用方与用户当前版本比对 */
+    public RosterToken parseRosterToken(String token) {
         if (token == null || token.isBlank()) {
             return null;
         }
@@ -98,7 +103,11 @@ public class SessionService {
             if (!decoded.startsWith("roster:")) {
                 return null;
             }
-            return Long.parseLong(decoded.substring("roster:".length()));
+            String[] parts = decoded.split(":");
+            // roster:userId（旧格式，视为版本 0） / roster:userId:version
+            long userId = Long.parseLong(parts[1]);
+            int version = parts.length >= 3 ? Integer.parseInt(parts[2]) : 0;
+            return new RosterToken(userId, version);
         } catch (Exception e) {
             return null;
         }
