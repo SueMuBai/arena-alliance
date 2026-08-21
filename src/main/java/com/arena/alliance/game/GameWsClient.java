@@ -9,6 +9,7 @@ import reactor.netty.http.client.HttpClient;
 import reactor.netty.http.client.WebsocketClientSpec;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadLocalRandom;
@@ -18,13 +19,15 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 单个 apikey 的游戏 WebSocket 长连接（基于 Netty/reactor-netty）。
- * 按官方协议推荐做指数退避重连（250ms 起，5s 封顶，带抖动）；
+ * 按官方协议推荐做指数退避重连（250ms 起，5s 封顶，带抖动），并在 45 秒无消息时
+ * 主动断开半开连接；
  * 401 握手失败或 1008 关闭视为凭证失效，停止重试并通知上层。
  */
 public class GameWsClient {
 
     private static final Logger log = LoggerFactory.getLogger(GameWsClient.class);
     private static final int MAX_FRAME = 8 * 1024 * 1024;
+    static final Duration DEFAULT_INACTIVITY_TIMEOUT = Duration.ofSeconds(45);
 
     private static final ScheduledExecutorService RECONNECT_TIMER =
             Executors.newSingleThreadScheduledExecutor(r -> {
@@ -47,15 +50,22 @@ public class GameWsClient {
     private final String wsUrl;
     private final Listener listener;
     private final String tag;
+    private final Duration inactivityTimeout;
     private final AtomicBoolean running = new AtomicBoolean();
     private volatile Disposable current;
     private volatile long backoffMs = 250;
 
     public GameWsClient(HttpClient baseClient, String wsUrl, String token, String tag, Listener listener) {
+        this(baseClient, wsUrl, token, tag, listener, DEFAULT_INACTIVITY_TIMEOUT);
+    }
+
+    GameWsClient(HttpClient baseClient, String wsUrl, String token, String tag, Listener listener,
+                 Duration inactivityTimeout) {
         this.client = baseClient.headers(h -> h.set(HttpHeaderNames.AUTHORIZATION, "Bearer " + token));
         this.wsUrl = wsUrl;
         this.listener = listener;
         this.tag = tag;
+        this.inactivityTimeout = inactivityTimeout;
     }
 
     public void start() {
@@ -83,13 +93,16 @@ public class GameWsClient {
                 .websocket(WebsocketClientSpec.builder().maxFramePayloadLength(MAX_FRAME).build())
                 .uri(wsUrl)
                 .handle((in, out) -> {
-                    backoffMs = 250;
                     listener.onOpen();
                     in.receiveCloseStatus().subscribe(closeRef::set, e -> { });
                     return in.aggregateFrames(MAX_FRAME)
                             .receive()
                             .asString(StandardCharsets.UTF_8)
-                            .doOnNext(listener::onMessage)
+                            .timeout(inactivityTimeout)
+                            .doOnNext(text -> {
+                                backoffMs = 250;
+                                listener.onMessage(text);
+                            })
                             .then();
                 })
                 .then()

@@ -158,6 +158,7 @@ public class MemberSession implements GameWsClient.Listener {
             case "tick" -> {
                 currentTick = message.data() == null ? currentTick : message.data().asLong(currentTick);
                 overridesThisTick = 0;
+                ctx.onKeyOnline(keyId, currentTick);
             }
             case "state" -> handleState(GameJson.parseState(message.data()));
             case "received" -> handleReceipt(GameJson.parseReceipt(message.data()));
