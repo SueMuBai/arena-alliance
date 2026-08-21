@@ -24,18 +24,28 @@ public class MapController {
     private final MapSseService sse;
     private final IncidentService incidentService;
     private final RuleService ruleService;
+    private final MapTerrainService terrainService;
 
     public MapController(MapSnapshotService snapshotService, MapSseService sse,
-                         IncidentService incidentService, RuleService ruleService) {
+                         IncidentService incidentService, RuleService ruleService,
+                         MapTerrainService terrainService) {
         this.snapshotService = snapshotService;
         this.sse = sse;
         this.incidentService = incidentService;
         this.ruleService = ruleService;
+        this.terrainService = terrainService;
     }
 
     @GetMapping("/snapshot")
     public ApiResponse<Map<String, Object>> snapshot(HttpServletRequest request) {
         return ApiResponse.ok(snapshotService.build(current(request).id()));
+    }
+
+    @GetMapping("/terrain")
+    public ApiResponse<MapTerrainService.Window> terrain(
+            @RequestParam long minChunkX, @RequestParam long maxChunkX,
+            @RequestParam long minChunkY, @RequestParam long maxChunkY) {
+        return ApiResponse.ok(terrainService.window(minChunkX, maxChunkX, minChunkY, maxChunkY));
     }
 
     /** 当前生效的联盟规则（成员可见，公约页展示用） */

@@ -7,12 +7,14 @@ import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.BitSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicLong;
@@ -28,6 +30,8 @@ import java.util.concurrent.atomic.AtomicLong;
 @Component
 public class WorldAggregator {
 
+    public static final int TERRAIN_CHUNK_SIZE = 32;
+
     public record OwnerRef(String objectId, long userId, long keyId, String gameUsername,
                            String kind, String unitType, long lastTick, Cell lastPos) {
     }
@@ -40,6 +44,18 @@ public class WorldAggregator {
                                  PlayerState state, Instant at) {
     }
 
+    public record TerrainChunk(long chunkX, long chunkY, BitSet cells) {
+    }
+
+    public record TerrainWindow(String epoch, long revision, List<TerrainChunk> chunks) {
+    }
+
+    public record TerrainChange(long revision, Cell cell) {
+    }
+
+    private record TerrainChunkKey(long x, long y) {
+    }
+
     /** 成员对象索引：按格 / 按对象 ID（仅含近 2 tick 内确认的位置） */
     public record MemberIndex(Map<Cell, OwnerRef> byCell, Map<String, OwnerRef> byId) {
 
@@ -49,7 +65,11 @@ public class WorldAggregator {
     private final Map<Long, MemberSnapshot> members = new ConcurrentHashMap<>();
     private final Map<String, OwnerRef> objectOwners = new ConcurrentHashMap<>();
     private final Map<Cell, Boolean> obstacles = new ConcurrentHashMap<>();
+    private final Map<TerrainChunkKey, BitSet> obstacleChunks = new HashMap<>();
     private final Queue<Cell> pendingObstacles = new ConcurrentLinkedQueue<>();
+    private final Queue<TerrainChange> pendingTerrainChanges = new ConcurrentLinkedQueue<>();
+    private final String terrainEpoch = UUID.randomUUID().toString();
+    private final AtomicLong terrainRevision = new AtomicLong();
     private final Map<Cell, Long> resources = new ConcurrentHashMap<>();
     /**
      * 当前联盟视野中的敌人并集。成员 state 是完整快照；每次状态更新后从 members 现有快照重建，
@@ -76,9 +96,7 @@ public class WorldAggregator {
                     case "OBSTACLE" -> {
                         if (o.positions() != null) {
                             for (Cell c : o.positions()) {
-                                if (obstacles.putIfAbsent(c, Boolean.TRUE) == null) {
-                                    pendingObstacles.add(c);
-                                }
+                                rememberObstacle(c, true);
                             }
                         }
                     }
@@ -258,12 +276,62 @@ public class WorldAggregator {
         return out;
     }
 
+    public List<TerrainChange> drainTerrainChanges(int max) {
+        List<TerrainChange> out = new ArrayList<>();
+        TerrainChange change;
+        while (out.size() < max && (change = pendingTerrainChanges.poll()) != null) {
+            out.add(change);
+        }
+        return out;
+    }
+
+    public synchronized TerrainWindow terrainWindow(long minChunkX, long maxChunkX,
+                                                     long minChunkY, long maxChunkY) {
+        List<TerrainChunk> chunks = new ArrayList<>();
+        obstacleChunks.forEach((key, bits) -> {
+            if (key.x() >= minChunkX && key.x() <= maxChunkX
+                    && key.y() >= minChunkY && key.y() <= maxChunkY) {
+                chunks.add(new TerrainChunk(key.x(), key.y(), (BitSet) bits.clone()));
+            }
+        });
+        chunks.sort((left, right) -> {
+            int byY = Long.compare(left.chunkY(), right.chunkY());
+            return byY != 0 ? byY : Long.compare(left.chunkX(), right.chunkX());
+        });
+        return new TerrainWindow(terrainEpoch, terrainRevision.get(), List.copyOf(chunks));
+    }
+
+    public String terrainEpoch() {
+        return terrainEpoch;
+    }
+
+    public long terrainRevision() {
+        return terrainRevision.get();
+    }
+
     /** 启动时从持久层恢复障碍记忆 */
-    public void preloadObstacles(Iterable<Cell> cells) {
+    public synchronized void preloadObstacles(Iterable<Cell> cells) {
         for (Cell c : cells) {
-            obstacles.put(c, Boolean.TRUE);
+            rememberObstacle(c, false);
         }
         version.incrementAndGet();
+    }
+
+    private void rememberObstacle(Cell cell, boolean publishChange) {
+        if (cell == null || obstacles.putIfAbsent(cell, Boolean.TRUE) != null) {
+            return;
+        }
+        long chunkX = Math.floorDiv(cell.x(), TERRAIN_CHUNK_SIZE);
+        long chunkY = Math.floorDiv(cell.y(), TERRAIN_CHUNK_SIZE);
+        int localX = Math.floorMod(cell.x(), TERRAIN_CHUNK_SIZE);
+        int localY = Math.floorMod(cell.y(), TERRAIN_CHUNK_SIZE);
+        obstacleChunks.computeIfAbsent(new TerrainChunkKey(chunkX, chunkY), ignored -> new BitSet(1024))
+                .set(localY * TERRAIN_CHUNK_SIZE + localX);
+        if (publishChange) {
+            pendingObstacles.add(cell);
+            long revision = terrainRevision.incrementAndGet();
+            pendingTerrainChanges.add(new TerrainChange(revision, cell));
+        }
     }
 
     public Map<Long, MemberSnapshot> members() {

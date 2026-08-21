@@ -13,7 +13,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.LongFunction;
 
 /**
- * 地图页实时通道（SSE）：snapshot 全量快照 / incident 事件 / ping 心跳。
+ * 地图页实时通道（SSE）：动态 snapshot / 永久地形增量 / incident 事件 / ping 心跳。
  */
 @Service
 public class MapSseService {
@@ -50,6 +50,12 @@ public class MapSseService {
 
     public void broadcastIncident(Object payload) {
         broadcast("incident", payload);
+    }
+
+    public void broadcastTerrainDelta(Object payload) {
+        if (payload != null) {
+            broadcast("terrain", payload);
+        }
     }
 
     @Scheduled(fixedDelay = 20_000)

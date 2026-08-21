@@ -32,7 +32,8 @@ class MapSnapshotServiceTest {
         UserService users = mock(UserService.class);
         ApiKeyService apiKeys = mock(ApiKeyService.class);
         MapSseService sse = mock(MapSseService.class);
-        MapSnapshotService service = new MapSnapshotService(aggregator, engine, rules, users, apiKeys, sse);
+        MapTerrainService terrain = mock(MapTerrainService.class);
+        MapSnapshotService service = new MapSnapshotService(aggregator, engine, rules, users, apiKeys, sse, terrain);
 
         GameObject controlledCore = core("core-alice", true, "alice", 12, 8);
         PlayerState state = new PlayerState("ACTIVE", null, 5, 0, null,
@@ -44,7 +45,6 @@ class MapSnapshotServiceTest {
 
         when(aggregator.members()).thenReturn(Map.of(11L, member));
         when(aggregator.enemies()).thenReturn(Map.of("core-alice", sighting));
-        when(aggregator.obstacles()).thenReturn(Map.of());
         when(aggregator.resources()).thenReturn(Map.of());
         when(aggregator.maxTick()).thenReturn(100L);
         when(rules.rules()).thenReturn(new RuleSettings());
@@ -57,6 +57,7 @@ class MapSnapshotServiceTest {
 
         assertFalse(memberView.containsKey("core"));
         assertTrue(((List<?>) snapshot.get("enemies")).isEmpty());
+        assertFalse(snapshot.containsKey("obstacles"));
 
         Map<String, Object> ownerSnapshot = service.build(7L);
         Map<String, Object> ownerMemberView =
