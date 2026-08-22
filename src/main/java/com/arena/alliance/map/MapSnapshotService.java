@@ -44,12 +44,14 @@ public class MapSnapshotService {
     private final ApiKeyService apiKeyService;
     private final HostingService hostingService;
     private final MapSseService sse;
+    private final MapTerrainService terrain;
 
     private volatile long lastPushedVersion = -1;
 
     public MapSnapshotService(WorldAggregator aggregator, AllianceEngine engine, RuleService ruleService,
                               UserService userService, ApiKeyService apiKeyService,
-                              HostingService hostingService, MapSseService sse) {
+                              HostingService hostingService, MapSseService sse,
+                              MapTerrainService terrain) {
         this.aggregator = aggregator;
         this.engine = engine;
         this.ruleService = ruleService;
@@ -57,10 +59,15 @@ public class MapSnapshotService {
         this.apiKeyService = apiKeyService;
         this.hostingService = hostingService;
         this.sse = sse;
+        this.terrain = terrain;
     }
 
     @Scheduled(fixedDelay = 1500)
     public void pump() {
+        List<WorldAggregator.TerrainChange> terrainChanges = aggregator.drainTerrainChanges(20_000);
+        if (!terrainChanges.isEmpty() && sse.clientCount() > 0) {
+            sse.broadcastTerrainDelta(terrain.delta(terrainChanges));
+        }
         long version = aggregator.version();
         if (version == lastPushedVersion || sse.clientCount() == 0) {
             return;
@@ -94,6 +101,9 @@ public class MapSnapshotService {
         snapshot.put("commandWindowMs", COMMAND_WINDOW_MS);
         snapshot.put("tickRemainingMs", Math.max(0, COMMAND_WINDOW_MS - COUNTDOWN_SAFETY_MS - elapsed));
         snapshot.put("tickEstimated", true);
+        snapshot.put("terrainEpoch", aggregator.terrainEpoch());
+        snapshot.put("terrainRevision", aggregator.terrainRevision());
+        snapshot.put("terrainChunkSize", WorldAggregator.TERRAIN_CHUNK_SIZE);
         snapshot.put("allianceName", ruleService.rules().allianceName);
         snapshot.put("updatedAt", Instant.now().toString());
 
@@ -190,12 +200,6 @@ public class MapSnapshotService {
             enemies.add(em);
         }
         snapshot.put("enemies", enemies);
-
-        List<long[]> obstacles = new ArrayList<>();
-        for (Cell c : aggregator.obstacles().keySet()) {
-            obstacles.add(new long[]{c.x(), c.y()});
-        }
-        snapshot.put("obstacles", obstacles);
 
         List<long[]> resources = new ArrayList<>();
         aggregator.resources().forEach((cell, observedTick) ->

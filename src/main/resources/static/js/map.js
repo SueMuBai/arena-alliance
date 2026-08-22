@@ -27,6 +27,9 @@
 
   const canvas = $id('map');
   const ctx = canvas.getContext('2d');
+  const terrainCanvas = document.createElement('canvas');
+  const terrainCtx = terrainCanvas.getContext('2d');
+  const TERRAIN_CHUNK_SIZE = 32;
   // Vue 响应式状态：Canvas 每帧直接读取，侧栏组件自动跟随变化
   const state = Vue.reactive({
     me: null,
@@ -51,6 +54,156 @@
     }
   });
   const colorCache = {};
+  const terrain = {
+    epoch: null,
+    revision: 0,
+    chunks: new Map(),
+    loadedBounds: null,
+    loading: false,
+    dirty: true,
+    timer: null,
+    requestSeq: 0
+  };
+
+  function terrainKey(x, y) { return x + ':' + y; }
+
+  function decodeBits(base64) {
+    const raw = atob(base64 || '');
+    const bits = new Uint8Array(TERRAIN_CHUNK_SIZE * TERRAIN_CHUNK_SIZE / 8);
+    for (let i = 0; i < Math.min(raw.length, bits.length); i++) bits[i] = raw.charCodeAt(i);
+    return bits;
+  }
+
+  function indexBits(bits) {
+    let count = 0;
+    for (let i = 0; i < 1024; i++) if (bits[i >> 3] & (1 << (i & 7))) count++;
+    const indices = new Uint16Array(count);
+    let at = 0;
+    for (let i = 0; i < 1024; i++) {
+      if (bits[i >> 3] & (1 << (i & 7))) indices[at++] = i;
+    }
+    return indices;
+  }
+
+  function putTerrainChunk(x, y, bits) {
+    terrain.chunks.set(terrainKey(x, y), {x, y, bits, indices: indexBits(bits)});
+    terrain.dirty = true;
+  }
+
+  function resetTerrain(epoch) {
+    terrain.epoch = epoch || null;
+    terrain.revision = 0;
+    terrain.chunks.clear();
+    terrain.loadedBounds = null;
+    terrain.dirty = true;
+  }
+
+  function chunkBounds(paddingFactor) {
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    const minX = Math.floor(s2wX(0) / TERRAIN_CHUNK_SIZE);
+    const maxX = Math.floor(s2wX(w) / TERRAIN_CHUNK_SIZE);
+    const minY = Math.floor(s2wY(0) / TERRAIN_CHUNK_SIZE);
+    const maxY = Math.floor(s2wY(h) / TERRAIN_CHUNK_SIZE);
+    const padX = Math.max(2, Math.ceil((maxX - minX + 1) * paddingFactor));
+    const padY = Math.max(2, Math.ceil((maxY - minY + 1) * paddingFactor));
+    return {minX: minX - padX, maxX: maxX + padX, minY: minY - padY, maxY: maxY + padY};
+  }
+
+  function containsBounds(outer, inner) {
+    return outer && outer.minX <= inner.minX && outer.maxX >= inner.maxX
+      && outer.minY <= inner.minY && outer.maxY >= inner.maxY;
+  }
+
+  async function loadTerrainForView(force) {
+    if (!state.me || terrain.loading) return;
+    const visible = chunkBounds(0);
+    if (!force && containsBounds(terrain.loadedBounds, visible)) return;
+    const wanted = chunkBounds(0.5);
+    const seq = ++terrain.requestSeq;
+    terrain.loading = true;
+    try {
+      const query = new URLSearchParams({
+        minChunkX: wanted.minX, maxChunkX: wanted.maxX,
+        minChunkY: wanted.minY, maxChunkY: wanted.maxY
+      });
+      const data = await api('/api/map/terrain?' + query);
+      if (terrain.epoch && data.epoch !== terrain.epoch) resetTerrain(data.epoch);
+      if (!terrain.epoch) terrain.epoch = data.epoch;
+      for (const chunk of data.chunks || []) {
+        putTerrainChunk(chunk.x, chunk.y, decodeBits(chunk.bits));
+      }
+      terrain.revision = Math.max(terrain.revision, Number(data.revision || 0));
+      if (seq === terrain.requestSeq) terrain.loadedBounds = wanted;
+    } catch (e) {
+      if (force) toast(e.message, true);
+    } finally {
+      terrain.loading = false;
+    }
+  }
+
+  function scheduleTerrainLoad(force) {
+    clearTimeout(terrain.timer);
+    terrain.timer = setTimeout(() => loadTerrainForView(!!force), force ? 0 : 120);
+  }
+
+  function syncTerrainMetadata(snapshot) {
+    if (!snapshot || !snapshot.terrainEpoch) return;
+    if (terrain.epoch && terrain.epoch !== snapshot.terrainEpoch) {
+      resetTerrain(snapshot.terrainEpoch);
+      scheduleTerrainLoad(true);
+      return;
+    }
+    if (!terrain.epoch) terrain.epoch = snapshot.terrainEpoch;
+    const remoteRevision = Number(snapshot.terrainRevision || 0);
+    if (!terrain.loadedBounds) {
+      terrain.revision = remoteRevision;
+    } else if (remoteRevision > terrain.revision) {
+      scheduleTerrainLoad(true);
+    }
+  }
+
+  function applyTerrainDelta(delta) {
+    if (!delta || !delta.epoch) return;
+    if (terrain.epoch && terrain.epoch !== delta.epoch) {
+      resetTerrain(delta.epoch);
+      scheduleTerrainLoad(true);
+      return;
+    }
+    if (!terrain.epoch) terrain.epoch = delta.epoch;
+    const from = Number(delta.fromRevision || 0);
+    const to = Number(delta.toRevision || 0);
+    if (to <= terrain.revision) return;
+    if (from > terrain.revision + 1) {
+      scheduleTerrainLoad(true);
+      return;
+    }
+    const changed = new Map();
+    for (const cell of delta.cells || []) {
+      const x = Number(cell[0]), y = Number(cell[1]);
+      const cx = Math.floor(x / TERRAIN_CHUNK_SIZE);
+      const cy = Math.floor(y / TERRAIN_CHUNK_SIZE);
+      const key = terrainKey(cx, cy);
+      const inLoadedWindow = terrain.loadedBounds && cx >= terrain.loadedBounds.minX
+        && cx <= terrain.loadedBounds.maxX && cy >= terrain.loadedBounds.minY
+        && cy <= terrain.loadedBounds.maxY;
+      if (!inLoadedWindow && !terrain.chunks.has(key)) continue;
+      let bits = changed.get(key);
+      if (!bits) {
+        const existing = terrain.chunks.get(key);
+        bits = existing ? existing.bits.slice() : new Uint8Array(128);
+        changed.set(key, bits);
+      }
+      const localX = ((x % TERRAIN_CHUNK_SIZE) + TERRAIN_CHUNK_SIZE) % TERRAIN_CHUNK_SIZE;
+      const localY = ((y % TERRAIN_CHUNK_SIZE) + TERRAIN_CHUNK_SIZE) % TERRAIN_CHUNK_SIZE;
+      const bit = localY * TERRAIN_CHUNK_SIZE + localX;
+      bits[bit >> 3] |= 1 << (bit & 7);
+    }
+    for (const [key, bits] of changed) {
+      const parts = key.split(':');
+      putTerrainChunk(Number(parts[0]), Number(parts[1]), bits);
+    }
+    terrain.revision = to;
+  }
 
   /* 每个成员（游戏账号/keyId）一种颜色；按 keyId 取模保证跨刷新稳定 */
   function memberColor(keyId) {
@@ -94,12 +247,51 @@
     canvas.style.width = rect.width + 'px';
     canvas.style.height = rect.height + 'px';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    terrainCanvas.width = canvas.width;
+    terrainCanvas.height = canvas.height;
+    terrainCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    terrain.dirty = true;
+    scheduleTerrainLoad(false);
   }
 
   function w2sX(wx) { return (wx - state.cam.cx) * state.cam.scale + canvas.clientWidth / 2; }
   function w2sY(wy) { return (wy - state.cam.cy) * state.cam.scale + canvas.clientHeight / 2; }
   function s2wX(sx) { return (sx - canvas.clientWidth / 2) / state.cam.scale + state.cam.cx; }
   function s2wY(sy) { return (sy - canvas.clientHeight / 2) / state.cam.scale + state.cam.cy; }
+
+  function redrawTerrainLayer(x0, x1, y0, y1, s) {
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    terrainCtx.clearRect(0, 0, w, h);
+    terrainCtx.fillStyle = '#242c3b';
+    const minChunkX = Math.floor(x0 / TERRAIN_CHUNK_SIZE);
+    const maxChunkX = Math.floor(x1 / TERRAIN_CHUNK_SIZE);
+    const minChunkY = Math.floor(y0 / TERRAIN_CHUNK_SIZE);
+    const maxChunkY = Math.floor(y1 / TERRAIN_CHUNK_SIZE);
+    const visibleChunkSlots = (maxChunkX - minChunkX + 1) * (maxChunkY - minChunkY + 1);
+    const drawChunk = chunk => {
+      for (const bit of chunk.indices) {
+        const ox = chunk.x * TERRAIN_CHUNK_SIZE + bit % TERRAIN_CHUNK_SIZE;
+        const oy = chunk.y * TERRAIN_CHUNK_SIZE + Math.floor(bit / TERRAIN_CHUNK_SIZE);
+        if (ox >= x0 && ox <= x1 && oy >= y0 && oy <= y1) {
+          terrainCtx.fillRect(w2sX(ox), w2sY(oy), s, s);
+        }
+      }
+    };
+    if (visibleChunkSlots <= terrain.chunks.size * 2 + 64) {
+      for (let cy = minChunkY; cy <= maxChunkY; cy++) {
+        for (let cx = minChunkX; cx <= maxChunkX; cx++) {
+          const chunk = terrain.chunks.get(terrainKey(cx, cy));
+          if (chunk) drawChunk(chunk);
+        }
+      }
+    } else {
+      for (const chunk of terrain.chunks.values()) {
+        if (chunk.x >= minChunkX && chunk.x <= maxChunkX
+          && chunk.y >= minChunkY && chunk.y <= maxChunkY) drawChunk(chunk);
+      }
+    }
+    terrain.dirty = false;
+  }
 
   function render(now) {
     const w = canvas.clientWidth, h = canvas.clientHeight, s = state.cam.scale;
@@ -134,11 +326,9 @@
     if (!snap) { requestAnimationFrame(render); return; }
     const inView = (x, y) => x >= x0 && x <= x1 && y >= y0 && y <= y1;
 
-    // 障碍（永久地形记忆）
-    ctx.fillStyle = '#242c3b';
-    for (const o of snap.obstacles || []) {
-      if (inView(o[0], o[1])) ctx.fillRect(w2sX(o[0]), w2sY(o[1]), s, s);
-    }
+    // 障碍（永久地形记忆）使用独立缓存层，视角或区块未变化时不重复逐格绘制。
+    if (terrain.dirty) redrawTerrainLayer(x0, x1, y0, y1, s);
+    ctx.drawImage(terrainCanvas, 0, 0, terrainCanvas.width, terrainCanvas.height, 0, 0, w, h);
 
     // 资源点
     ctx.fillStyle = '#2f9e5f';
@@ -980,7 +1170,9 @@
     moved += Math.abs(dx) + Math.abs(dy);
     state.cam.cx -= dx / state.cam.scale;
     state.cam.cy -= dy / state.cam.scale;
+    terrain.dirty = true;
     lastX = e.clientX; lastY = e.clientY;
+    scheduleTerrainLoad(false);
   });
   window.addEventListener('mouseup', () => {
     dragging = false;
@@ -1044,6 +1236,8 @@
     state.cam.scale = Math.min(64, Math.max(1.2, state.cam.scale * factor));
     state.cam.cx = wx - (mx - canvas.clientWidth / 2) / state.cam.scale;
     state.cam.cy = wy - (my - canvas.clientHeight / 2) / state.cam.scale;
+    terrain.dirty = true;
+    scheduleTerrainLoad(false);
   }, { passive: false });
 
   window.addEventListener('keydown', e => {
@@ -1056,18 +1250,28 @@
     state.cam.cx = x + 0.5;
     state.cam.cy = y + 0.5;
     if (scale) state.cam.scale = scale;
+    terrain.dirty = true;
+    scheduleTerrainLoad(false);
   }
-  $id('btn-center').onclick = () => centerOn(0, 0);
-  $id('btn-beacon').onclick = () => {
+
+  function bindClick(id, handler) {
+    const el = $id(id);
+    if (el) el.onclick = handler;
+  }
+
+  bindClick('btn-center', () => centerOn(0, 0));
+  bindClick('btn-beacon', () => {
     const b = state.snapshot && state.snapshot.beacon;
     if (b && b.pos) centerOn(b.pos[0], b.pos[1], Math.max(state.cam.scale, 18));
-  };
-  $id('legend-toggle').onclick = () => {
+  });
+  bindClick('legend-toggle', () => {
     const lg = $id('legend');
+    if (!lg) return;
     lg.classList.toggle('collapsed');
-    $id('legend-arrow').textContent = lg.classList.contains('collapsed') ? '▸' : '▾';
-  };
-  $id('hud-selected').onclick = () => selectMember(null, false);
+    const arrow = $id('legend-arrow');
+    if (arrow) arrow.textContent = lg.classList.contains('collapsed') ? '▸' : '▾';
+  });
+  bindClick('hud-selected', () => selectMember(null, false));
 
   // ---------- 侧栏（Vue 组件，直接绑定响应式 state） ----------
   Vue.createApp({
@@ -1138,6 +1342,7 @@
         const nextSnapshot = JSON.parse(e.data);
         const tickChanged = state.snapshot && state.snapshot.tick !== nextSnapshot.tick;
         syncTickClock(nextSnapshot);
+        syncTerrainMetadata(nextSnapshot);
         state.snapshot = nextSnapshot;
         if (tickChanged) refreshControllable();
         setAllianceName(state.snapshot.allianceName);
@@ -1148,6 +1353,9 @@
         updateSelectedHud();
         updateHud();
       } catch (err) { }
+    });
+    es.addEventListener('terrain', e => {
+      try { applyTerrainDelta(JSON.parse(e.data)); } catch (err) { }
     });
     es.addEventListener('incident', e => {
       try { pushIncident(JSON.parse(e.data)); } catch (err) { }
@@ -1230,6 +1438,7 @@
     try {
       state.snapshot = await api('/api/map/snapshot');
       syncTickClock(state.snapshot);
+      syncTerrainMetadata(state.snapshot);
       setAllianceName(state.snapshot.allianceName);
       // 初始视角：第一个有 Core 的成员，否则信标
       const withCore = (state.snapshot.members || []).find(m => m.core && m.core.pos);
@@ -1237,6 +1446,7 @@
       else if (state.snapshot.beacon && state.snapshot.beacon.pos) {
         centerOn(state.snapshot.beacon.pos[0], state.snapshot.beacon.pos[1]);
       }
+      await loadTerrainForView(true);
       updateHud();
     } catch (e) {
       toast(e.message, true);
